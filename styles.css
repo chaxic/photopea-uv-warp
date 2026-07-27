@@ -613,6 +613,7 @@ footer a:hover {
 
 .app-shell.is-focus .app-header,
 .app-shell.is-focus .source-bar,
+.app-shell.is-focus .reference-bar,
 .app-shell.is-focus .saved-bar,
 .app-shell.is-focus .controls-card,
 .app-shell.is-focus .status-card,

@@ -12,12 +12,14 @@ const requiredFiles = [
   "src/mesh.js",
   "src/warp.js",
   "src/photopea.js",
+  "src/polypen.js",
   "assets/icon.svg",
   "plugin.json",
   "uv-warp-photopea.json",
   "plugin.local.json",
   "README.md",
   "LICENSE",
+  "CHANGELOG.md",
 ];
 
 for (const relativePath of requiredFiles) {
@@ -32,9 +34,16 @@ const installerPlugin = JSON.parse(
 const localPlugin = JSON.parse(await readFile(resolve(root, "plugin.local.json"), "utf8"));
 
 for (const id of [
-  "preset",
   "warp-canvas",
   "capture-source",
+  "capture-reference",
+  "load-reference",
+  "tool-pen",
+  "tool-select",
+  "insert-mode",
+  "triangles-toggle",
+  "source-opacity",
+  "reference-opacity",
   "mode-layout",
   "mode-warp",
   "preview-toggle",
@@ -54,7 +63,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.2.1"',
+  'src="./?preview=1&v=0.3.0"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -67,6 +76,7 @@ if (plugin.url !== installerPlugin.url || plugin.icon !== installerPlugin.icon) 
 
 const app = await readFile(resolve(root, "src/app.js"), "utf8");
 const photopea = await readFile(resolve(root, "src/photopea.js"), "utf8");
+const polypen = await readFile(resolve(root, "src/polypen.js"), "utf8");
 for (const requirement of [
   "drawWarpedMesh",
   "createOutputLayerScript",
@@ -74,8 +84,12 @@ for (const requirement of [
   "UVWP_DATA_V1:",
   'saveToOE("psd")',
   "makeCloseTemporaryScript",
+  "resolvePenAction",
+  "bridgeEdges",
+  "beginSourceCapture",
+  "beginReferenceCapture",
 ]) {
-  if (!app.includes(requirement) && !photopea.includes(requirement)) {
+  if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);
   }
 }

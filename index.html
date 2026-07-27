@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.2.1" />
-    <link rel="stylesheet" href="./installer.css?v=0.2.1" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.0" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.0" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.2.1</span>
+            <span class="install-version">v0.3.0</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.2.1</strong>
+              <strong>v0.3.0</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.2.1"
+              src="./?preview=1&v=0.3.0"
               loading="eager"
             ></iframe>
           </div>
@@ -140,7 +140,7 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.2.1</span>
+        <span class="version">v0.3.0</span>
       </header>
 
       <section class="source-bar">
@@ -162,11 +162,28 @@
         </div>
       </section>
 
+      <section class="source-bar reference-bar">
+        <div class="source-summary">
+          <span class="eyebrow">Reference</span>
+          <strong id="reference-name">No reference loaded</strong>
+          <span id="reference-meta">Capture the document underneath, or load an image.</span>
+        </div>
+        <div class="source-actions">
+          <button class="button button-subtle" id="capture-reference" type="button">
+            Capture reference
+          </button>
+          <button class="button button-subtle" id="load-reference" type="button">
+            Load image
+          </button>
+          <input id="reference-file" type="file" accept="image/*" hidden />
+        </div>
+      </section>
+
       <section class="saved-bar is-hidden" id="saved-bar">
         <label for="saved-projects">Saved warp</label>
         <select id="saved-projects"></select>
         <button class="button button-subtle" id="load-project" type="button">Edit</button>
-        <button class="button button-subtle" id="toggle-output" type="button" title="Toggle the saved result and original source">On / off</button>
+        <button class="button button-subtle" id="toggle-output" type="button" title="Toggle the warped result and the untouched original">On / off</button>
       </section>
 
       <section class="workspace-card" id="workspace-card">
@@ -174,6 +191,11 @@
           <div class="segmented" aria-label="Editing mode">
             <button class="is-active" id="mode-layout" type="button" aria-pressed="true">Layout</button>
             <button id="mode-warp" type="button" aria-pressed="false">Warp</button>
+          </div>
+
+          <div class="segmented" id="layout-tools" aria-label="Layout tools">
+            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Create and bridge mesh faces">Pen</button>
+            <button id="tool-select" type="button" aria-pressed="false" title="Select and move points">Select</button>
           </div>
 
           <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Show the live warped image">
@@ -192,6 +214,14 @@
             Mesh
           </button>
 
+          <button class="toolbar-toggle" id="triangles-toggle" type="button" aria-pressed="false" title="Show triangle split used for warping">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 20 12 4l8 16Z" />
+              <path d="M12 4v16" />
+            </svg>
+            Triangles
+          </button>
+
           <button class="toolbar-toggle" id="focus-toggle" type="button" aria-pressed="false" title="Hide controls and enlarge the editor">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
@@ -208,13 +238,13 @@
               <path d="m7 12 17 6 17-5M24 18v24M7 24l17 6 17-5" />
             </svg>
             <strong>Capture a source layer to begin</strong>
-            <span>The visible document underneath becomes your alignment reference.</span>
+            <span>Only the selected layer is captured. Add a reference separately for alignment.</span>
           </div>
-          <div class="canvas-badge" id="canvas-badge">Layout · move points over the source</div>
+          <div class="canvas-badge" id="canvas-badge">Layout · Pen tool</div>
         </div>
 
         <div class="editor-footer">
-          <span id="selection-hint">Drag a point. Shift-click to select several.</span>
+          <span id="selection-hint">Use Pen to create faces. Select an edge, then click another edge to bridge a gap.</span>
           <div>
             <button class="text-button" id="undo" type="button" disabled>Undo</button>
             <button class="text-button" id="redo" type="button" disabled>Redo</button>
@@ -223,52 +253,25 @@
       </section>
 
       <section class="controls-card" id="controls-card">
-        <div class="control-row preset-row">
-          <label for="preset">Mesh</label>
-          <select id="preset">
-            <option value="building" selected>Building — roof, front + side</option>
-            <option value="grid-2">Grid — 2 × 2</option>
-            <option value="grid-3">Grid — 3 × 3</option>
-            <option value="grid-4">Grid — 4 × 4</option>
-            <option value="custom">Custom grid</option>
-            <option value="single">Single quad</option>
+        <div class="control-row preset-row" id="pen-controls">
+          <label for="insert-mode">Insert</label>
+          <select id="insert-mode">
+            <option value="tri-quad" selected>Tri / Quad</option>
+            <option value="quad-strip">Quad strip</option>
+            <option value="edge">Edge only</option>
+            <option value="vertex">Vertex only</option>
           </select>
-          <button class="button button-subtle" id="reset-layout" type="button">Rebuild</button>
+          <button class="button button-subtle" id="reset-layout" type="button">Reset mesh</button>
+          <button class="button button-subtle" id="delete-selection" type="button">Delete</button>
         </div>
 
         <div class="control-grid">
-          <label id="divisions-field">
-            <span>Face divisions</span>
-            <select id="divisions">
-              <option value="1">1 — simple</option>
-              <option value="2" selected>2 — balanced</option>
-              <option value="3">3 — detailed</option>
-              <option value="4">4 — dense</option>
-            </select>
-          </label>
-          <label id="orientation-field">
-            <span>Visible side</span>
-            <select id="orientation">
-              <option value="right" selected>Right side</option>
-              <option value="left">Left side</option>
-            </select>
-          </label>
-          <label class="is-hidden" id="columns-field">
-            <span>Columns</span>
-            <input id="columns" type="number" min="1" max="10" value="3" />
-          </label>
-          <label class="is-hidden" id="rows-field">
-            <span>Rows</span>
-            <input id="rows" type="number" min="1" max="10" value="3" />
-          </label>
           <label>
-            <span>Editor view</span>
-            <select id="view-padding">
-              <option value="10">Close — 10% padding</option>
-              <option value="25" selected>Medium — 25% padding</option>
-              <option value="50">Wide — 50% padding</option>
-              <option value="full">Full document</option>
-            </select>
+            <span>Source opacity</span>
+            <span class="range-with-output">
+              <input id="source-opacity" type="range" min="0" max="100" value="100" />
+              <output id="source-opacity-value">100%</output>
+            </span>
           </label>
           <label>
             <span>Reference opacity</span>
@@ -303,20 +306,24 @@
       <details class="instructions">
         <summary>How this workflow works</summary>
         <ol>
-          <li>Convert the image to a Smart Object and select it.</li>
-          <li>Capture it, then arrange the mesh in <strong>Layout</strong> mode over the source.</li>
-          <li>Switch to <strong>Warp</strong> and move matching points onto the reference underneath.</li>
-          <li>Use <strong>Preview</strong> to compare live, then create the output.</li>
+          <li>Select a Smart Object and <strong>Capture selected</strong> (source only).</li>
+          <li>Optionally <strong>Capture reference</strong> or load an alignment image.</li>
+          <li>In <strong>Layout</strong>, use the <strong>Pen</strong> tool like RetopoFlow PolyPen: extrude edges, grow tris/quads, and bridge two edges to fill gaps.</li>
+          <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
         </ol>
-        <p>The result and mesh data are saved in the PSD. Choose the saved warp above to edit and update it later.</p>
+        <p>
+          Output adds a <strong>UV Warp Result</strong> layer and a hidden <strong>UV Warp Data</strong> layer.
+          The original source stays in the PSD untouched — use <strong>On / off</strong> to show it again,
+          or <strong>Edit</strong> a saved warp to tweak and update the result.
+        </p>
       </details>
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.2.1 · local processing · no login</span>
+        <span>v0.3.0 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.2.1"></script>
+    <script type="module" src="./installer.js?v=0.3.0"></script>
   </body>
 </html>

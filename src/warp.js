@@ -44,10 +44,13 @@ export function solveAffineTransform(source, target) {
 }
 
 export function triangulateQuads(quads) {
-  return quads.flatMap((quad) => [
-    [quad[0], quad[1], quad[2]],
-    [quad[0], quad[2], quad[3]],
-  ]);
+  return quads.flatMap((face) => {
+    if (face.length === 3) return [face];
+    return [
+      [face[0], face[1], face[2]],
+      [face[0], face[2], face[3]],
+    ];
+  });
 }
 
 function expandTriangle(points, amount) {

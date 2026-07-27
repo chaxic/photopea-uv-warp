@@ -1,10 +1,4 @@
-import {
-  buildBuildingMesh,
-  buildGridMesh,
-  clonePoints,
-  mapMeshToRect,
-  validateProjectMesh,
-} from "./mesh.js";
+import { clonePoints, validateProjectMesh } from "./mesh.js";
 import {
   createOutputLayerScript,
   isEmbeddedInPhotopea,
@@ -19,25 +13,44 @@ import {
   scanSavedWarps,
   toggleSavedOutput,
 } from "./photopea.js";
-import { drawWarpedMesh, meshWarnings } from "./warp.js";
+import {
+  applyPenAction,
+  deleteVertex,
+  nearestEdge,
+  nearestVertex,
+  resolvePenAction,
+  seedQuadMesh,
+  triangulateFaces,
+  validateFaces,
+} from "./polypen.js";
+import { drawWarpedMesh, meshWarnings, triangulateQuads } from "./warp.js";
 
 const CAPTURE_TIMEOUT_MS = 120_000;
+const HISTORY_LIMIT = 80;
 
 const elements = {
   shell: document.querySelector(".app-shell"),
   layerName: document.querySelector("#layer-name"),
   layerMeta: document.querySelector("#layer-meta"),
   captureSource: document.querySelector("#capture-source"),
+  captureReference: document.querySelector("#capture-reference"),
+  loadReference: document.querySelector("#load-reference"),
+  referenceFile: document.querySelector("#reference-file"),
+  referenceName: document.querySelector("#reference-name"),
+  referenceMeta: document.querySelector("#reference-meta"),
   refreshProjects: document.querySelector("#refresh-projects"),
   savedBar: document.querySelector("#saved-bar"),
   savedProjects: document.querySelector("#saved-projects"),
   loadProject: document.querySelector("#load-project"),
   toggleOutput: document.querySelector("#toggle-output"),
-  workspaceCard: document.querySelector("#workspace-card"),
   modeLayout: document.querySelector("#mode-layout"),
   modeWarp: document.querySelector("#mode-warp"),
+  toolPen: document.querySelector("#tool-pen"),
+  toolSelect: document.querySelector("#tool-select"),
+  layoutTools: document.querySelector("#layout-tools"),
   previewToggle: document.querySelector("#preview-toggle"),
   meshToggle: document.querySelector("#mesh-toggle"),
+  trianglesToggle: document.querySelector("#triangles-toggle"),
   focusToggle: document.querySelector("#focus-toggle"),
   editorWrap: document.querySelector("#editor-wrap"),
   canvas: document.querySelector("#warp-canvas"),
@@ -46,17 +59,10 @@ const elements = {
   selectionHint: document.querySelector("#selection-hint"),
   undo: document.querySelector("#undo"),
   redo: document.querySelector("#redo"),
-  controlsCard: document.querySelector("#controls-card"),
-  preset: document.querySelector("#preset"),
-  divisions: document.querySelector("#divisions"),
-  orientation: document.querySelector("#orientation"),
-  columns: document.querySelector("#columns"),
-  rows: document.querySelector("#rows"),
-  divisionsField: document.querySelector("#divisions-field"),
-  orientationField: document.querySelector("#orientation-field"),
-  columnsField: document.querySelector("#columns-field"),
-  rowsField: document.querySelector("#rows-field"),
-  viewPadding: document.querySelector("#view-padding"),
+  insertMode: document.querySelector("#insert-mode"),
+  deleteSelection: document.querySelector("#delete-selection"),
+  sourceOpacity: document.querySelector("#source-opacity"),
+  sourceOpacityValue: document.querySelector("#source-opacity-value"),
   referenceOpacity: document.querySelector("#reference-opacity"),
   referenceOpacityValue: document.querySelector("#reference-opacity-value"),
   resetLayout: document.querySelector("#reset-layout"),
@@ -69,8 +75,11 @@ const elements = {
 
 const state = {
   mode: "layout",
+  layoutTool: "pen",
+  insertMode: elements.insertMode.value,
   preview: true,
   meshVisible: true,
+  trianglesVisible: false,
   focus: false,
   busy: false,
   project: null,
@@ -81,11 +90,22 @@ const state = {
   pendingSavedProject: null,
   savedProjects: [],
   selectedPoints: new Set(),
+  selectedEdge: null,
+  selectedFace: null,
+  penPreview: null,
   drag: null,
   undo: [],
   redo: [],
   renderFrame: 0,
 };
+
+function clamp(value, minimum, maximum) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function clampPoint(point) {
+  return { x: clamp(point.x, 0, 1), y: clamp(point.y, 0, 1) };
+}
 
 function setStatus(tone, title, message) {
   elements.statusCard.dataset.tone = tone;
@@ -93,248 +113,156 @@ function setStatus(tone, title, message) {
   elements.statusMessage.textContent = message;
 }
 
-function setBusy(busy) {
-  state.busy = busy;
-  elements.captureSource.disabled = busy;
-  elements.refreshProjects.disabled = busy;
-  elements.loadProject.disabled = busy;
-  elements.toggleOutput.disabled = busy;
-  elements.createOutput.disabled = busy || !state.project;
-  elements.resetLayout.disabled = busy || !state.project;
-  elements.resetWarp.disabled = busy || !state.project;
-}
-
 function setToggle(button, active) {
   button.classList.toggle("is-active", active);
   button.setAttribute("aria-pressed", String(active));
 }
 
-function clamp(value, min, max) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function clampPoint(point) {
-  return {
-    x: clamp(point.x, 0, 1),
-    y: clamp(point.y, 0, 1),
+function setBusy(busy) {
+  state.busy = busy;
+  const disabled = (element, unlessReady = false) => {
+    if (element) element.disabled = busy || (unlessReady && !state.project);
   };
-}
-
-function numberValue(input, min, max) {
-  const value = clamp(Math.round(Number(input.value) || min), min, max);
-  input.value = String(value);
-  return value;
-}
-
-function encodeBase64Utf8(value) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-  return btoa(binary);
-}
-
-function decodeBase64Utf8(value) {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return new TextDecoder().decode(bytes);
-}
-
-function randomProjectId() {
-  const random = Math.random().toString(36).slice(2, 8);
-  return `uvwp-${Date.now().toString(36)}-${random}`;
-}
-
-function shortProjectId(projectId) {
-  return projectId.replace(/^uvwp-/, "").slice(-8);
-}
-
-function safeLayerLabel(value) {
-  return String(value || "Layer").replace(/[\r\n[\]]+/g, " ").trim().slice(0, 54);
-}
-
-function meshFromControls() {
-  const preset = elements.preset.value;
-  if (preset === "building") {
-    return buildBuildingMesh(
-      Number(elements.divisions.value),
-      elements.orientation.value,
-      0,
-    );
-  }
-  if (preset === "single") return buildGridMesh(1, 1, 0);
-  if (preset === "grid-2") return buildGridMesh(2, 2, 0);
-  if (preset === "grid-3") return buildGridMesh(3, 3, 0);
-  if (preset === "grid-4") return buildGridMesh(4, 4, 0);
-  return buildGridMesh(
-    numberValue(elements.columns, 1, 10),
-    numberValue(elements.rows, 1, 10),
-    0,
-  );
-}
-
-function normalizedSourceBounds() {
-  const bounds = state.captureMeta.bounds;
-  const left = clamp(Math.min(bounds.left, bounds.right), 0, 1);
-  const top = clamp(Math.min(bounds.top, bounds.bottom), 0, 1);
-  const right = clamp(Math.max(bounds.left, bounds.right), 0, 1);
-  const bottom = clamp(Math.max(bounds.top, bounds.bottom), 0, 1);
-  if (!(right - left > 0.0001 && bottom - top > 0.0001)) {
-    throw new Error("The visible part of this layer has no usable bounds.");
-  }
-  return { left, top, right, bottom };
-}
-
-function snapshotMesh() {
-  if (!state.project) return null;
-  return {
-    name: state.project.mesh.name,
-    warpLinked: Boolean(state.project.mesh.warpLinked),
-    quads: state.project.mesh.quads.map((quad) => [...quad]),
-    sourceVertices: clonePoints(state.project.mesh.sourceVertices),
-    warpVertices: clonePoints(state.project.mesh.warpVertices),
-  };
-}
-
-function restoreMesh(snapshot) {
-  state.project.mesh = {
-    name: snapshot.name,
-    warpLinked: Boolean(snapshot.warpLinked),
-    quads: snapshot.quads.map((quad) => [...quad]),
-    sourceVertices: clonePoints(snapshot.sourceVertices),
-    warpVertices: clonePoints(snapshot.warpVertices),
-  };
-  state.selectedPoints.clear();
-  scheduleRender();
-}
-
-function pushUndo(previous) {
-  if (!previous) return;
-  state.undo.push(previous);
-  if (state.undo.length > 80) state.undo.shift();
-  state.redo = [];
+  disabled(elements.captureSource);
+  disabled(elements.captureReference, true);
+  disabled(elements.loadReference, true);
+  disabled(elements.refreshProjects);
+  disabled(elements.loadProject);
+  disabled(elements.toggleOutput);
+  disabled(elements.createOutput, true);
+  disabled(elements.resetLayout, true);
+  disabled(elements.resetWarp, true);
+  disabled(elements.deleteSelection, true);
+  disabled(elements.toolPen, true);
+  disabled(elements.toolSelect, true);
+  elements.referenceFile.disabled = busy || !state.project;
   updateHistoryButtons();
-}
-
-function updateHistoryButtons() {
-  elements.undo.disabled = state.busy || state.undo.length === 0;
-  elements.redo.disabled = state.busy || state.redo.length === 0;
-}
-
-function undo() {
-  if (!state.project || !state.undo.length || state.busy) return;
-  state.redo.push(snapshotMesh());
-  restoreMesh(state.undo.pop());
-  updateHistoryButtons();
-}
-
-function redo() {
-  if (!state.project || !state.redo.length || state.busy) return;
-  state.undo.push(snapshotMesh());
-  restoreMesh(state.redo.pop());
-  updateHistoryButtons();
-}
-
-function rebuildMesh({ recordHistory = true } = {}) {
-  if (!state.captureMeta || !state.project) return;
-  const previous = recordHistory ? snapshotMesh() : null;
-  const localMesh = meshFromControls();
-  const documentMesh = mapMeshToRect(localMesh, normalizedSourceBounds());
-  state.project.mesh = {
-    name: documentMesh.name,
-    warpLinked: true,
-    quads: documentMesh.quads,
-    sourceVertices: documentMesh.vertices,
-    warpVertices: clonePoints(documentMesh.vertices),
-  };
-  state.selectedPoints.clear();
-  if (previous) pushUndo(previous);
-  setMode("layout");
-  scheduleRender();
-  setStatus(
-    "success",
-    "Layout rebuilt",
-    `${documentMesh.quads.length} connected ${documentMesh.quads.length === 1 ? "quad" : "quads"} created over the source.`,
-  );
-}
-
-function resetWarp() {
-  if (!state.project || state.busy) return;
-  const previous = snapshotMesh();
-  state.project.mesh.warpVertices = clonePoints(state.project.mesh.sourceVertices);
-  state.project.mesh.warpLinked = true;
-  state.selectedPoints.clear();
-  pushUndo(previous);
-  setMode("warp");
-  scheduleRender();
-  setStatus("info", "Warp reset", "The warp points now match the source layout again.");
-}
-
-function updateConditionalControls() {
-  const building = elements.preset.value === "building";
-  const custom = elements.preset.value === "custom";
-  elements.divisionsField.classList.toggle("is-hidden", !building);
-  elements.orientationField.classList.toggle("is-hidden", !building);
-  elements.columnsField.classList.toggle("is-hidden", !custom);
-  elements.rowsField.classList.toggle("is-hidden", !custom);
-}
-
-function setMode(mode) {
-  state.mode = mode;
-  setToggle(elements.modeLayout, mode === "layout");
-  setToggle(elements.modeWarp, mode === "warp");
-  elements.canvasBadge.textContent =
-    mode === "layout"
-      ? "Layout · move points over the source"
-      : state.preview
-        ? "Warp · live preview"
-        : "Warp · original preview";
-  elements.selectionHint.textContent =
-    mode === "layout"
-      ? "Place the points over source edges. Shift-click selects several."
-      : "Move matching points onto the reference. Preview updates live.";
-  scheduleRender();
 }
 
 function setProjectReady(ready) {
   elements.emptyState.classList.toggle("is-hidden", ready);
   elements.canvasBadge.classList.toggle("is-hidden", !ready);
   elements.canvas.classList.toggle("is-ready", ready);
-  elements.modeLayout.disabled = !ready;
-  elements.modeWarp.disabled = !ready;
-  elements.previewToggle.disabled = !ready;
-  elements.meshToggle.disabled = !ready;
-  elements.createOutput.disabled = state.busy || !ready;
-  elements.resetLayout.disabled = state.busy || !ready;
-  elements.resetWarp.disabled = state.busy || !ready;
+  for (const element of [
+    elements.modeLayout, elements.modeWarp, elements.previewToggle, elements.meshToggle,
+    elements.trianglesToggle, elements.focusToggle, elements.toolPen, elements.toolSelect,
+    elements.insertMode, elements.deleteSelection, elements.sourceOpacity,
+    elements.referenceOpacity, elements.resetLayout, elements.resetWarp, elements.createOutput,
+  ]) {
+    element.disabled = !ready || state.busy;
+  }
+  elements.captureReference.disabled = !ready || state.busy;
+  elements.loadReference.disabled = !ready || state.busy;
+  elements.referenceFile.disabled = !ready || state.busy;
 }
 
-function editorViewRect() {
-  if (elements.viewPadding.value === "full" || !state.captureMeta) {
-    return { left: 0, top: 0, right: 1, bottom: 1 };
+function normalizedSourceBounds() {
+  const bounds = state.captureMeta?.bounds;
+  if (!bounds) throw new Error("Capture a source layer first.");
+  const result = {
+    left: clamp(Math.min(bounds.left, bounds.right), 0, 1),
+    top: clamp(Math.min(bounds.top, bounds.bottom), 0, 1),
+    right: clamp(Math.max(bounds.left, bounds.right), 0, 1),
+    bottom: clamp(Math.max(bounds.top, bounds.bottom), 0, 1),
+  };
+  if (result.right - result.left <= 0.0001 || result.bottom - result.top <= 0.0001) {
+    throw new Error("The visible part of this layer has no usable bounds.");
   }
-  const bounds = normalizedSourceBounds();
-  const fraction = Number(elements.viewPadding.value) / 100;
-  const width = bounds.right - bounds.left;
-  const height = bounds.bottom - bounds.top;
+  return result;
+}
+
+function snapshotMesh() {
+  if (!state.project) return null;
+  const { mesh } = state.project;
   return {
-    left: clamp(bounds.left - width * fraction, 0, 1),
-    top: clamp(bounds.top - height * fraction, 0, 1),
-    right: clamp(bounds.right + width * fraction, 0, 1),
-    bottom: clamp(bounds.bottom + height * fraction, 0, 1),
+    name: mesh.name,
+    warpLinked: Boolean(mesh.warpLinked),
+    quads: mesh.quads.map((face) => [...face]),
+    sourceVertices: clonePoints(mesh.sourceVertices),
+    warpVertices: clonePoints(mesh.warpVertices),
   };
 }
 
+function clearSelection() {
+  state.selectedPoints.clear();
+  state.selectedEdge = null;
+  state.selectedFace = null;
+  state.penPreview = null;
+}
+
+function restoreMesh(snapshot) {
+  state.project.mesh = {
+    name: snapshot.name,
+    warpLinked: Boolean(snapshot.warpLinked),
+    quads: snapshot.quads.map((face) => [...face]),
+    sourceVertices: clonePoints(snapshot.sourceVertices),
+    warpVertices: clonePoints(snapshot.warpVertices),
+  };
+  clearSelection();
+  scheduleRender();
+}
+
+function pushUndo(snapshot) {
+  if (!snapshot) return;
+  state.undo.push(snapshot);
+  if (state.undo.length > HISTORY_LIMIT) state.undo.shift();
+  state.redo = [];
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  elements.undo.disabled = state.busy || !state.undo.length;
+  elements.redo.disabled = state.busy || !state.redo.length;
+}
+
+function undo() {
+  if (state.busy || !state.project || !state.undo.length) return;
+  state.redo.push(snapshotMesh());
+  restoreMesh(state.undo.pop());
+  updateHistoryButtons();
+}
+
+function redo() {
+  if (state.busy || !state.project || !state.redo.length) return;
+  state.undo.push(snapshotMesh());
+  restoreMesh(state.redo.pop());
+  updateHistoryButtons();
+}
+
+function editorViewRect() {
+  return { left: 0, top: 0, right: 1, bottom: 1 };
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  if (mode !== "layout") state.penPreview = null;
+  setToggle(elements.modeLayout, mode === "layout");
+  setToggle(elements.modeWarp, mode === "warp");
+  elements.layoutTools.classList.toggle("is-hidden", mode !== "layout");
+  elements.canvasBadge.textContent = mode === "layout"
+    ? `Layout · ${state.layoutTool === "pen" ? "Pen tool" : "Select tool"}`
+    : state.preview ? "Warp · live preview" : "Warp · original preview";
+  elements.selectionHint.textContent = mode === "layout"
+    ? state.layoutTool === "pen"
+      ? "Use Pen to create faces. Select an edge, then click another edge to bridge a gap."
+      : "Select points or edges, then drag them. Shift-click adds points."
+    : "Move matching points onto the reference. Preview updates live.";
+  scheduleRender();
+}
+
+function setLayoutTool(tool) {
+  state.layoutTool = tool;
+  if (tool !== "pen") state.penPreview = null;
+  setToggle(elements.toolPen, tool === "pen");
+  setToggle(elements.toolSelect, tool === "select");
+  setMode("layout");
+}
+
 function prepareCanvas() {
-  const rectangle = elements.canvas.getBoundingClientRect();
+  const rect = elements.canvas.getBoundingClientRect();
   const ratio = Math.min(2, window.devicePixelRatio || 1);
-  const width = Math.max(1, Math.round(rectangle.width * ratio));
-  const height = Math.max(1, Math.round(rectangle.height * ratio));
+  const width = Math.max(1, Math.round(rect.width * ratio));
+  const height = Math.max(1, Math.round(rect.height * ratio));
   if (elements.canvas.width !== width || elements.canvas.height !== height) {
     elements.canvas.width = width;
     elements.canvas.height = height;
@@ -345,161 +273,149 @@ function prepareCanvas() {
 function viewportMetrics() {
   const canvas = prepareCanvas();
   const view = editorViewRect();
-  if (!state.captureMeta) {
-    return { ...canvas, view, x: 0, y: 0, drawWidth: canvas.width, drawHeight: canvas.height };
-  }
-  const contentWidth = (view.right - view.left) * state.captureMeta.documentWidth;
-  const contentHeight = (view.bottom - view.top) * state.captureMeta.documentHeight;
-  const contentAspect = contentWidth / contentHeight;
+  const documentWidth = state.captureMeta?.documentWidth || 1;
+  const documentHeight = state.captureMeta?.documentHeight || 1;
+  const aspect = documentWidth / documentHeight;
   const padding = 9 * canvas.ratio;
   const availableWidth = Math.max(1, canvas.width - padding * 2);
   const availableHeight = Math.max(1, canvas.height - padding * 2);
-  const canvasAspect = availableWidth / availableHeight;
-  let drawWidth;
-  let drawHeight;
-  if (canvasAspect > contentAspect) {
-    drawHeight = availableHeight;
-    drawWidth = drawHeight * contentAspect;
-  } else {
-    drawWidth = availableWidth;
-    drawHeight = drawWidth / contentAspect;
-  }
+  const drawHeight = availableWidth / availableHeight > aspect ? availableHeight : availableWidth / aspect;
+  const drawWidth = drawHeight * aspect;
   return {
-    ...canvas,
-    view,
-    x: (canvas.width - drawWidth) / 2,
-    y: (canvas.height - drawHeight) / 2,
-    drawWidth,
-    drawHeight,
+    ...canvas, view, x: (canvas.width - drawWidth) / 2, y: (canvas.height - drawHeight) / 2,
+    drawWidth, drawHeight,
   };
 }
 
 function documentToCanvas(point, metrics) {
   return {
-    x:
-      metrics.x +
-      ((point.x - metrics.view.left) / (metrics.view.right - metrics.view.left)) *
-        metrics.drawWidth,
-    y:
-      metrics.y +
-      ((point.y - metrics.view.top) / (metrics.view.bottom - metrics.view.top)) *
-        metrics.drawHeight,
+    x: metrics.x + ((point.x - metrics.view.left) / (metrics.view.right - metrics.view.left)) * metrics.drawWidth,
+    y: metrics.y + ((point.y - metrics.view.top) / (metrics.view.bottom - metrics.view.top)) * metrics.drawHeight,
   };
 }
 
 function canvasToDocument(point, metrics) {
-  return {
-    x:
-      metrics.view.left +
-      ((point.x - metrics.x) / metrics.drawWidth) *
-        (metrics.view.right - metrics.view.left),
-    y:
-      metrics.view.top +
-      ((point.y - metrics.y) / metrics.drawHeight) *
-        (metrics.view.bottom - metrics.view.top),
-  };
+  return clampPoint({
+    x: metrics.view.left + ((point.x - metrics.x) / metrics.drawWidth) * (metrics.view.right - metrics.view.left),
+    y: metrics.view.top + ((point.y - metrics.y) / metrics.drawHeight) * (metrics.view.bottom - metrics.view.top),
+  });
 }
 
-function drawImageCrop(context, image, metrics, opacity = 1) {
-  const sourceX = metrics.view.left * image.naturalWidth;
-  const sourceY = metrics.view.top * image.naturalHeight;
-  const sourceWidth = (metrics.view.right - metrics.view.left) * image.naturalWidth;
-  const sourceHeight = (metrics.view.bottom - metrics.view.top) * image.naturalHeight;
+function drawImageCrop(context, image, metrics, opacity) {
+  if (!image || opacity <= 0) return;
   context.save();
   context.globalAlpha = opacity;
   context.beginPath();
   context.rect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
   context.clip();
-  context.drawImage(
-    image,
-    sourceX,
-    sourceY,
-    sourceWidth,
-    sourceHeight,
-    metrics.x,
-    metrics.y,
-    metrics.drawWidth,
-    metrics.drawHeight,
-  );
+  context.drawImage(image, 0, 0, image.naturalWidth, image.naturalHeight, metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
   context.restore();
 }
 
 function drawLiveWarp(context, metrics) {
-  const sourceVertices = state.project.mesh.sourceVertices.map((point) => ({
+  const mesh = state.project.mesh;
+  const sourceVertices = mesh.sourceVertices.map((point) => ({
     x: point.x * state.sourceImage.naturalWidth,
     y: point.y * state.sourceImage.naturalHeight,
   }));
-  const targetVertices = state.project.mesh.warpVertices.map((point) =>
-    documentToCanvas(point, metrics),
-  );
+  const targets = mesh.warpVertices.map((point) => documentToCanvas(point, metrics));
   context.save();
+  context.globalAlpha = Number(elements.sourceOpacity.value) / 100;
   context.beginPath();
   context.rect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
   context.clip();
-  drawWarpedMesh(
-    context,
-    state.sourceImage,
-    sourceVertices,
-    targetVertices,
-    state.project.mesh.quads,
-    { seamOverlap: 0.5 * metrics.ratio },
-  );
+  drawWarpedMesh(context, state.sourceImage, sourceVertices, targets, mesh.quads, {
+    seamOverlap: 0.5 * metrics.ratio,
+  });
   context.restore();
 }
 
-function drawMeshOverlay(context, metrics) {
-  if (!state.meshVisible) return;
-  const activeVertices =
-    state.mode === "layout"
-      ? state.project.mesh.sourceVertices
-      : state.project.mesh.warpVertices;
-  const points = activeVertices.map((point) => documentToCanvas(point, metrics));
+function sameEdge(edgeA, edgeB) {
+  return edgeA && edgeB && (
+    (edgeA[0] === edgeB[0] && edgeA[1] === edgeB[1]) ||
+    (edgeA[0] === edgeB[1] && edgeA[1] === edgeB[0])
+  );
+}
 
+function drawMeshOverlay(context, metrics) {
+  if (!state.meshVisible || !state.project) return;
+  const mesh = state.project.mesh;
+  const vertices = state.mode === "layout" ? mesh.sourceVertices : mesh.warpVertices;
+  const points = vertices.map((point) => documentToCanvas(point, metrics));
   context.save();
-  context.lineJoin = "round";
   context.lineCap = "round";
-  for (const quad of state.project.mesh.quads) {
+  context.lineJoin = "round";
+  for (const face of mesh.quads) {
+    const faceSelected = state.selectedFace && face.length === state.selectedFace.length &&
+      face.every((index, position) => index === state.selectedFace[position]);
     context.beginPath();
-    quad.forEach((index, corner) => {
-      const point = points[index];
-      if (corner === 0) context.moveTo(point.x, point.y);
-      else context.lineTo(point.x, point.y);
-    });
+    face.forEach((index, position) => position ? context.lineTo(points[index].x, points[index].y) : context.moveTo(points[index].x, points[index].y));
     context.closePath();
-    context.fillStyle =
-      state.mode === "layout"
-        ? "rgba(119, 132, 255, 0.075)"
-        : "rgba(74, 224, 181, 0.055)";
+    context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.16)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
     context.fill();
-    context.strokeStyle =
-      state.mode === "layout"
-        ? "rgba(170, 178, 255, 0.92)"
-        : "rgba(105, 232, 194, 0.94)";
+    context.strokeStyle = state.mode === "layout" ? "rgba(170, 178, 255, 0.92)" : "rgba(105, 232, 194, 0.94)";
     context.lineWidth = 1.25 * metrics.ratio;
     context.stroke();
   }
-
+  if (state.trianglesVisible) {
+    context.setLineDash([4 * metrics.ratio, 3 * metrics.ratio]);
+    context.strokeStyle = "rgba(255, 205, 104, 0.88)";
+    context.lineWidth = metrics.ratio;
+    for (const triangle of triangulateFaces(mesh.quads)) {
+      context.beginPath();
+      triangle.forEach((index, position) => position ? context.lineTo(points[index].x, points[index].y) : context.moveTo(points[index].x, points[index].y));
+      context.closePath();
+      context.stroke();
+    }
+    context.setLineDash([]);
+  }
+  if (state.selectedEdge) {
+    const [a, b] = state.selectedEdge;
+    context.beginPath();
+    context.moveTo(points[a].x, points[a].y);
+    context.lineTo(points[b].x, points[b].y);
+    context.strokeStyle = "#ffd166";
+    context.lineWidth = 3 * metrics.ratio;
+    context.stroke();
+  }
   points.forEach((point, index) => {
     const selected = state.selectedPoints.has(index);
     context.beginPath();
-    context.arc(
-      point.x,
-      point.y,
-      (selected ? 5.4 : 4.1) * metrics.ratio,
-      0,
-      Math.PI * 2,
-    );
-    context.fillStyle = selected
-      ? "#ffffff"
-      : state.mode === "layout"
-        ? "#cbd0ff"
-        : "#b8ffe9";
+    context.arc(point.x, point.y, (selected ? 5.4 : 4.1) * metrics.ratio, 0, Math.PI * 2);
+    context.fillStyle = selected ? "#ffffff" : state.mode === "layout" ? "#cbd0ff" : "#b8ffe9";
     context.fill();
-    context.strokeStyle =
-      state.mode === "layout" ? "#5868e6" : "#168d6b";
+    context.strokeStyle = state.mode === "layout" ? "#5868e6" : "#168d6b";
     context.lineWidth = (selected ? 2 : 1.4) * metrics.ratio;
     context.stroke();
   });
+  context.restore();
+}
+
+function drawPenPreview(context, metrics) {
+  const preview = state.penPreview?.preview;
+  if (!preview) return;
+  context.save();
+  context.setLineDash([6 * metrics.ratio, 4 * metrics.ratio]);
+  context.strokeStyle = "#ffd166";
+  context.fillStyle = "rgba(255, 209, 102, 0.12)";
+  context.lineWidth = 1.5 * metrics.ratio;
+  if (preview.kind === "vertex") {
+    const point = documentToCanvas(preview.point, metrics);
+    context.beginPath();
+    context.arc(point.x, point.y, 5 * metrics.ratio, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+  } else {
+    context.beginPath();
+    preview.points.forEach((point, index) => {
+      const display = documentToCanvas(point, metrics);
+      if (index) context.lineTo(display.x, display.y);
+      else context.moveTo(display.x, display.y);
+    });
+    if (preview.kind !== "edge") context.closePath();
+    context.fill();
+    context.stroke();
+  }
   context.restore();
 }
 
@@ -511,127 +427,163 @@ function render() {
   context.clearRect(0, 0, metrics.width, metrics.height);
   context.fillStyle = "#111318";
   context.fillRect(0, 0, metrics.width, metrics.height);
-
-  if (!state.project || !state.sourceImage || !state.backdropImage) return;
-
+  if (!state.project || !state.sourceImage) return;
   context.fillStyle = "#0d0f12";
   context.fillRect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
-  const referenceOpacity = Number(elements.referenceOpacity.value) / 100;
-  drawImageCrop(context, state.backdropImage, metrics, referenceOpacity);
-
+  drawImageCrop(context, state.backdropImage, metrics, Number(elements.referenceOpacity.value) / 100);
   if (state.mode === "layout" || !state.preview) {
-    drawImageCrop(context, state.sourceImage, metrics, 1);
+    drawImageCrop(context, state.sourceImage, metrics, Number(elements.sourceOpacity.value) / 100);
   } else {
     drawLiveWarp(context, metrics);
   }
-
   drawMeshOverlay(context, metrics);
+  if (state.mode === "layout" && state.layoutTool === "pen") drawPenPreview(context, metrics);
 }
 
 function scheduleRender() {
-  if (state.renderFrame) return;
-  state.renderFrame = requestAnimationFrame(render);
+  if (!state.renderFrame) state.renderFrame = requestAnimationFrame(render);
 }
 
 function pointerPosition(event, metrics) {
-  const rectangle = elements.canvas.getBoundingClientRect();
-  return {
-    x: (event.clientX - rectangle.left) * metrics.ratio,
-    y: (event.clientY - rectangle.top) * metrics.ratio,
-  };
+  const rect = elements.canvas.getBoundingClientRect();
+  return { x: (event.clientX - rect.left) * metrics.ratio, y: (event.clientY - rect.top) * metrics.ratio };
+}
+
+function hitThreshold(metrics) {
+  return (11 * metrics.ratio) / Math.min(metrics.drawWidth, metrics.drawHeight);
 }
 
 function activeVertices() {
-  if (!state.project) return [];
-  return state.mode === "layout"
-    ? state.project.mesh.sourceVertices
-    : state.project.mesh.warpVertices;
+  return state.mode === "layout" ? state.project.mesh.sourceVertices : state.project.mesh.warpVertices;
 }
 
-function nearestPoint(canvasPoint, metrics) {
-  const points = activeVertices();
-  let nearest = -1;
-  let best = 11 * metrics.ratio;
-  points.forEach((point, index) => {
-    const display = documentToCanvas(point, metrics);
-    const distance = Math.hypot(display.x - canvasPoint.x, display.y - canvasPoint.y);
-    if (distance <= best) {
-      best = distance;
-      nearest = index;
-    }
-  });
-  return nearest;
+function setPointSelection(indices, { preserve = false } = {}) {
+  if (!preserve) state.selectedPoints.clear();
+  indices.forEach((index) => state.selectedPoints.add(index));
 }
 
-function handlePointerDown(event) {
-  if (!state.project || state.busy || event.button !== 0) return;
-  const metrics = viewportMetrics();
-  const canvasPoint = pointerPosition(event, metrics);
-  const index = nearestPoint(canvasPoint, metrics);
-  if (index < 0) {
-    if (!event.shiftKey) state.selectedPoints.clear();
-    scheduleRender();
-    return;
-  }
+function selectEdge(edge, preserve = false) {
+  state.selectedEdge = [...edge];
+  state.selectedFace = null;
+  setPointSelection(edge, { preserve });
+}
 
-  if (event.shiftKey) {
-    if (state.selectedPoints.has(index)) state.selectedPoints.delete(index);
-    else state.selectedPoints.add(index);
-  } else if (!state.selectedPoints.has(index)) {
-    state.selectedPoints.clear();
-    state.selectedPoints.add(index);
-  }
-  if (!state.selectedPoints.size) {
-    scheduleRender();
-    return;
-  }
-
-  const pointerDocument = canvasToDocument(canvasPoint, metrics);
+function beginDrag(event, pointerDocument) {
   const vertices = activeVertices();
-  const starts = new Map();
-  state.selectedPoints.forEach((selectedIndex) => {
-    starts.set(selectedIndex, { ...vertices[selectedIndex] });
-  });
+  const starts = new Map([...state.selectedPoints].map((index) => [index, { ...vertices[index] }]));
   state.drag = {
     pointerId: event.pointerId,
     startPointer: pointerDocument,
     starts,
-    warpStarts:
-      state.mode === "layout" && state.project.mesh.warpLinked
-        ? new Map(
-            [...state.selectedPoints].map((selectedIndex) => [
-              selectedIndex,
-              { ...state.project.mesh.warpVertices[selectedIndex] },
-            ]),
-          )
-        : null,
+    warpStarts: state.mode === "layout" && state.project.mesh.warpLinked
+      ? new Map([...state.selectedPoints].map((index) => [index, { ...state.project.mesh.warpVertices[index] }]))
+      : null,
     before: snapshotMesh(),
     changed: false,
   };
   elements.canvas.setPointerCapture(event.pointerId);
   elements.canvas.classList.add("is-dragging");
+}
+
+function applyPen(pointerDocument, metrics) {
+  const mesh = state.project.mesh;
+  const action = resolvePenAction({
+    selection: { vertices: [...state.selectedPoints], edge: state.selectedEdge, face: state.selectedFace },
+    clickPoint: pointerDocument,
+    sourceVertices: mesh.sourceVertices,
+    faces: mesh.quads,
+    insertMode: state.insertMode,
+    snapThreshold: hitThreshold(metrics),
+  });
+  const before = snapshotMesh();
+  try {
+    const result = applyPenAction(action, mesh.sourceVertices, mesh.warpVertices, mesh.quads);
+    validateFaces(result.sourceVertices, result.faces);
+    state.project.mesh = {
+      ...mesh,
+      sourceVertices: result.sourceVertices,
+      warpVertices: result.warpVertices,
+      quads: result.faces,
+      warpLinked: mesh.warpLinked,
+    };
+    clearSelection();
+    setPointSelection(result.selection.vertices);
+    state.selectedEdge = result.selection.edge;
+    state.selectedFace = result.selection.face;
+    if (action.type !== "select-only") pushUndo(before);
+    setStatus("success", "Mesh updated", action.hint);
+  } catch (error) {
+    setStatus("error", "Could not update mesh", error.message);
+  }
+  scheduleRender();
+}
+
+function handlePointerDown(event) {
+  if (!state.project || state.busy || event.button !== 0) return;
+  elements.canvas.focus();
+  const metrics = viewportMetrics();
+  const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
+  const vertices = activeVertices();
+  const threshold = hitThreshold(metrics);
+  if (state.mode === "layout" && state.layoutTool === "pen") {
+    const edgeResult = nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold);
+    const vertex = nearestVertex(pointerDocument, vertices, threshold);
+    if (edgeResult && vertex < 0 && !state.selectedEdge) {
+      selectEdge(edgeResult.edge, event.shiftKey);
+      state.penPreview = null;
+      scheduleRender();
+      event.preventDefault();
+      return;
+    }
+    applyPen(pointerDocument, metrics);
+    return;
+  }
+  const vertex = nearestVertex(pointerDocument, vertices, threshold);
+  if (vertex >= 0) {
+    if (event.shiftKey) {
+      if (state.selectedPoints.has(vertex)) state.selectedPoints.delete(vertex);
+      else state.selectedPoints.add(vertex);
+    } else if (!state.selectedPoints.has(vertex)) {
+      clearSelection();
+      setPointSelection([vertex]);
+    }
+    if (state.selectedPoints.size) beginDrag(event, pointerDocument);
+  } else {
+    const edgeResult = state.mode === "layout"
+      ? nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold)
+      : null;
+    if (edgeResult) selectEdge(edgeResult.edge, event.shiftKey);
+    else if (!event.shiftKey) clearSelection();
+  }
   scheduleRender();
   event.preventDefault();
 }
 
 function handlePointerMove(event) {
-  if (!state.drag || state.drag.pointerId !== event.pointerId) return;
+  if (!state.project || state.busy) return;
   const metrics = viewportMetrics();
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
-  const delta = {
-    x: pointerDocument.x - state.drag.startPointer.x,
-    y: pointerDocument.y - state.drag.startPointer.y,
-  };
+  if (!state.drag) {
+    if (state.mode === "layout" && state.layoutTool === "pen") {
+      state.penPreview = resolvePenAction({
+        selection: { vertices: [...state.selectedPoints], edge: state.selectedEdge, face: state.selectedFace },
+        clickPoint: pointerDocument,
+        sourceVertices: state.project.mesh.sourceVertices,
+        faces: state.project.mesh.quads,
+        insertMode: state.insertMode,
+        snapThreshold: hitThreshold(metrics),
+      });
+      scheduleRender();
+    }
+    return;
+  }
+  if (state.drag.pointerId !== event.pointerId) return;
+  const delta = { x: pointerDocument.x - state.drag.startPointer.x, y: pointerDocument.y - state.drag.startPointer.y };
   const vertices = activeVertices();
   state.drag.starts.forEach((start, index) => {
-    const nextPoint = clampPoint({
-      x: start.x + delta.x,
-      y: start.y + delta.y,
-    });
-    vertices[index] = nextPoint;
-    if (state.drag.warpStarts) {
-      state.project.mesh.warpVertices[index] = { ...nextPoint };
-    }
+    const point = clampPoint({ x: start.x + delta.x, y: start.y + delta.y });
+    vertices[index] = point;
+    if (state.drag.warpStarts) state.project.mesh.warpVertices[index] = { ...point };
   });
   state.drag.changed = Math.abs(delta.x) > 1e-7 || Math.abs(delta.y) > 1e-7;
   scheduleRender();
@@ -643,22 +595,10 @@ function finishPointerDrag(event) {
   if (state.drag.changed) {
     if (state.mode === "warp") state.project.mesh.warpLinked = false;
     pushUndo(state.drag.before);
-    const warning = meshWarnings(
-      state.project.mesh.sourceVertices,
-      state.project.mesh.warpVertices,
-      state.project.mesh.quads,
-    );
-    if (warning.degenerate) {
-      setStatus("warning", "Collapsed mesh area", "Move overlapping points apart before creating the output.");
-    } else if (warning.flipped) {
-      setStatus("warning", "Folded mesh area", "A triangle crosses over itself. This is allowed, but may produce a mirrored fold.");
-    } else {
-      setStatus(
-        "success",
-        state.mode === "layout" ? "Layout updated" : "Warp updated",
-        `${state.selectedPoints.size} ${state.selectedPoints.size === 1 ? "point" : "points"} moved.`,
-      );
-    }
+    const warning = meshWarnings(state.project.mesh.sourceVertices, state.project.mesh.warpVertices, state.project.mesh.quads);
+    setStatus(warning.degenerate ? "warning" : warning.flipped ? "warning" : "success",
+      warning.degenerate ? "Collapsed mesh area" : warning.flipped ? "Folded mesh area" : `${state.mode === "layout" ? "Layout" : "Warp"} updated`,
+      warning.degenerate ? "Move overlapping points apart before creating output." : warning.flipped ? "A triangle crosses over itself and may mirror the output." : `${state.selectedPoints.size} point${state.selectedPoints.size === 1 ? "" : "s"} moved.`);
   }
   try { elements.canvas.releasePointerCapture(event.pointerId); } catch (_) {}
   state.drag = null;
@@ -666,28 +606,49 @@ function finishPointerDrag(event) {
   scheduleRender();
 }
 
+function deleteSelection() {
+  if (!state.project || state.busy) return;
+  if (!state.selectedPoints.size) {
+    if (state.selectedEdge) {
+      state.selectedEdge = null;
+      scheduleRender();
+    }
+    return;
+  }
+  const before = snapshotMesh();
+  let source = state.project.mesh.sourceVertices;
+  let warp = state.project.mesh.warpVertices;
+  let faces = state.project.mesh.quads;
+  try {
+    [...state.selectedPoints].sort((a, b) => b - a).forEach((index) => {
+      ({ sourceVertices: source, warpVertices: warp, faces } = deleteVertex(source, warp, faces, index));
+    });
+    validateFaces(source, faces);
+    state.project.mesh = { ...state.project.mesh, sourceVertices: source, warpVertices: warp, quads: faces };
+    clearSelection();
+    pushUndo(before);
+    setStatus("success", "Selection deleted", "Faces using the deleted points were removed.");
+  } catch (error) {
+    setStatus("error", "Could not delete selection", error.message);
+  }
+  scheduleRender();
+}
+
 function nudgeSelection(event) {
   if (!state.project || !state.selectedPoints.size) return false;
-  const directions = {
-    ArrowLeft: [-1, 0],
-    ArrowRight: [1, 0],
-    ArrowUp: [0, -1],
-    ArrowDown: [0, 1],
-  };
+  const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (!directions[event.key]) return false;
   const [dx, dy] = directions[event.key];
   const pixels = event.shiftKey ? 10 : 1;
   const before = snapshotMesh();
   const vertices = activeVertices();
   state.selectedPoints.forEach((index) => {
-    const nextPoint = clampPoint({
-      x: vertices[index].x + (dx * pixels) / state.captureMeta.documentWidth,
-      y: vertices[index].y + (dy * pixels) / state.captureMeta.documentHeight,
+    const point = clampPoint({
+      x: vertices[index].x + dx * pixels / state.captureMeta.documentWidth,
+      y: vertices[index].y + dy * pixels / state.captureMeta.documentHeight,
     });
-    vertices[index] = nextPoint;
-    if (state.mode === "layout" && state.project.mesh.warpLinked) {
-      state.project.mesh.warpVertices[index] = { ...nextPoint };
-    }
+    vertices[index] = point;
+    if (state.mode === "layout" && state.project.mesh.warpLinked) state.project.mesh.warpVertices[index] = { ...point };
   });
   if (state.mode === "warp") state.project.mesh.warpLinked = false;
   pushUndo(before);
@@ -696,109 +657,145 @@ function nudgeSelection(event) {
 }
 
 function handleKeyDown(event) {
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+  const modifier = event.ctrlKey || event.metaKey;
+  if (modifier && event.key.toLowerCase() === "z") {
     event.preventDefault();
-    if (event.shiftKey) redo();
-    else undo();
+    event.shiftKey ? redo() : undo();
     return;
   }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "y") {
+  if (modifier && event.key.toLowerCase() === "y") {
     event.preventDefault();
     redo();
     return;
   }
+  if ((event.key === "Delete" || event.key === "Backspace") && state.project) {
+    event.preventDefault();
+    deleteSelection();
+    return;
+  }
   if (nudgeSelection(event)) event.preventDefault();
+}
+
+function resetLayout() {
+  if (!state.project || state.busy) return;
+  const before = snapshotMesh();
+  state.project.mesh = seedQuadMesh(normalizedSourceBounds());
+  clearSelection();
+  pushUndo(before);
+  setMode("layout");
+  setStatus("success", "Mesh reset", "A single quad now covers the source bounds.");
+}
+
+function resetWarp() {
+  if (!state.project || state.busy) return;
+  const before = snapshotMesh();
+  state.project.mesh.warpVertices = clonePoints(state.project.mesh.sourceVertices);
+  state.project.mesh.warpLinked = true;
+  clearSelection();
+  pushUndo(before);
+  setMode("warp");
+  setStatus("info", "Warp reset", "The warp points match the source layout again.");
 }
 
 function imageFromBuffer(buffer) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(new Blob([buffer], { type: "image/png" }));
     const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("Photopea returned an image that the panel could not read."));
-    };
+    image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Photopea returned an unreadable image.")); };
     image.src = url;
+  });
+}
+
+function readReferenceFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("The selected reference image could not be decoded."));
+      image.src = reader.result;
+    };
+    reader.onerror = () => reject(new Error("The selected reference image could not be read."));
+    reader.readAsDataURL(file);
   });
 }
 
 function updateSourceSummary() {
   if (!state.captureMeta) return;
   elements.layerName.textContent = state.captureMeta.layerName;
-  elements.layerMeta.textContent =
-    `${Math.round(state.captureMeta.documentWidth)} × ${Math.round(state.captureMeta.documentHeight)} px document · ` +
-    (state.captureMeta.smartObject ? "Smart Object" : "Raster layer");
+  elements.layerMeta.textContent = `${Math.round(state.captureMeta.documentWidth)} × ${Math.round(state.captureMeta.documentHeight)} px document · ${state.captureMeta.smartObject ? "Smart Object" : "Raster layer"}`;
+}
+
+function randomProjectId() {
+  return `uvwp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function safeLayerLabel(value) {
+  return String(value || "Layer").replace(/[\r\n[\]]+/g, " ").trim().slice(0, 54);
 }
 
 function projectFromCapture() {
   const projectId = randomProjectId();
-  const shortId = shortProjectId(projectId);
-  const sourceLabel = safeLayerLabel(state.captureMeta.layerName);
+  const shortId = projectId.replace(/^uvwp-/, "").slice(-8);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     projectId,
-    source: {
-      layerId: state.captureMeta.layerId,
-      layerName: state.captureMeta.layerName,
-      documentName: state.captureMeta.documentName,
-      documentSource: state.captureMeta.documentSource,
-      documentWidth: state.captureMeta.documentWidth,
-      documentHeight: state.captureMeta.documentHeight,
-      bounds: state.captureMeta.bounds,
-      smartObject: state.captureMeta.smartObject,
-    },
-    mesh: {
-      name: "",
-      warpLinked: true,
-      quads: [],
-      sourceVertices: [],
-      warpVertices: [],
-    },
+    source: { ...state.captureMeta },
+    mesh: seedQuadMesh(normalizedSourceBounds()),
     output: {
-      groupName: `UV Warp — ${sourceLabel} [UVWP:${shortId}]`,
+      groupName: `UV Warp — ${safeLayerLabel(state.captureMeta.layerName)} [UVWP:${shortId}]`,
       resultName: `UV Warp Result [${shortId}]`,
       dataLayerName: `UV Warp Data [${shortId}]`,
+    },
+    view: {
+      sourceOpacity: Number(elements.sourceOpacity.value),
+      referenceOpacity: Number(elements.referenceOpacity.value),
+      insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
   };
 }
 
 function normalizeLoadedProject(project) {
-  if (!project || project.schemaVersion !== 1 || !project.source || !project.output) {
+  if (!project || ![1, 2].includes(project.schemaVersion) || !project.source || !project.output) {
     throw new Error("This saved UV Warp uses an unsupported data format.");
   }
   validateProjectMesh(project.mesh);
   return {
     ...project,
-    source: {
-      ...project.source,
-      layerId: state.captureMeta.layerId,
-      layerName: state.captureMeta.layerName,
-      documentName: state.captureMeta.documentName,
-      documentSource: state.captureMeta.documentSource,
-      documentWidth: state.captureMeta.documentWidth,
-      documentHeight: state.captureMeta.documentHeight,
-      bounds: state.captureMeta.bounds,
-      smartObject: state.captureMeta.smartObject,
-    },
+    schemaVersion: 2,
+    source: { ...project.source, ...state.captureMeta },
     mesh: {
-      name: project.mesh.name,
+      name: project.mesh.name || "Custom mesh",
       warpLinked: Boolean(project.mesh.warpLinked),
-      quads: project.mesh.quads.map((quad) => [...quad]),
+      quads: project.mesh.quads.map((face) => [...face]),
       sourceVertices: clonePoints(project.mesh.sourceVertices),
       warpVertices: clonePoints(project.mesh.warpVertices),
+    },
+    view: {
+      sourceOpacity: clamp(Number(project.view?.sourceOpacity) || 100, 0, 100),
+      referenceOpacity: clamp(Number(project.view?.referenceOpacity) || 65, 0, 100),
+      insertMode: project.view?.insertMode || "tri-quad",
     },
   };
 }
 
+function encodeBase64Utf8(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  return btoa(binary);
+}
+
+function decodeBase64Utf8(value) {
+  const binary = atob(value);
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
+}
+
 function clearCaptureTimeout(session = state.captureSession) {
-  if (!session?.timeoutId) return;
-  clearTimeout(session.timeoutId);
-  session.timeoutId = null;
+  if (session?.timeoutId) clearTimeout(session.timeoutId);
+  if (session) session.timeoutId = null;
 }
 
 function armCaptureTimeout(message) {
@@ -806,375 +803,229 @@ function armCaptureTimeout(message) {
   if (!session) return;
   clearCaptureTimeout(session);
   session.timeoutId = setTimeout(() => {
-    if (state.captureSession !== session || session.finalizing) return;
-    failCapture(message);
+    if (state.captureSession === session && !session.finalizing) failCapture(message);
   }, CAPTURE_TIMEOUT_MS);
-}
-
-function setCaptureStatus(title, message) {
-  setStatus("info", title, message);
-}
-
-async function normalizeCaptureBuffer(data) {
-  if (data instanceof ArrayBuffer) return data;
-  if (data instanceof Blob) return data.arrayBuffer();
-  if (ArrayBuffer.isView(data)) {
-    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-  }
-  return null;
 }
 
 function failCapture(message) {
   const session = state.captureSession;
-  if (session) {
-    clearCaptureTimeout(session);
-    session.finalizing = true;
-    session.stage = "failed";
-  }
+  clearCaptureTimeout(session);
+  if (session) session.finalizing = true;
   state.captureSession = null;
   state.pendingSavedProject = null;
-  setProjectReady(false);
   setBusy(false);
+  setProjectReady(Boolean(state.project));
   setStatus("error", "Capture failed", message);
 }
 
-function captureTempName(session, pass) {
-  return `__UV_WARP_CAPTURE__${session.token}-${pass}`;
+function captureTemporaryName(session) {
+  return `__UV_WARP_CAPTURE__${session.token}-${session.mode}`;
+}
+
+function captureTitle(session) {
+  return session.mode === "source" ? "Capturing source…" : "Capturing reference…";
 }
 
 function startSnapshot() {
   const session = state.captureSession;
   if (!session || session.finalizing) return;
   session.stage = "snapshotting";
-  session.snapshotBuffer = null;
-  session.snapshotDone = false;
-  setCaptureStatus(
-    "Capturing source…",
-    "Creating an independent PSD snapshot. The original workfile is not modified.",
-  );
-  armCaptureTimeout(
-    "Photopea could not create an independent PSD snapshot of the original workfile.",
-  );
+  setStatus("info", captureTitle(session), "Creating an independent PSD snapshot. The original workfile is not modified.");
+  armCaptureTimeout("Photopea could not create an independent PSD snapshot.");
   postPhotopeaScript(makeSnapshotScript());
 }
 
-function openCapturePass(pass) {
+function openTemporaryCapture() {
   const session = state.captureSession;
   if (!session || session.finalizing || !session.snapshotBuffer) return;
-  session.pass = pass;
-  session.current = {
-    bufferReceived: false,
-    renderDone: false,
-    cleanupResult: null,
-    cleanupDone: false,
-    temporaryDocumentName: captureTempName(session, pass),
-  };
   session.stage = "opening-temporary";
-  setCaptureStatus(
-    "Capturing source…",
-    pass === "backdrop"
-      ? "Opening a temporary copy for the alignment reference…"
-      : "Opening a temporary copy for the isolated source…",
-  );
-  armCaptureTimeout(
-    `Photopea could not open the independent temporary copy for the ${pass}.`,
-  );
+  session.current = { buffer: null, renderDone: false, cleanupDone: false, cleanupResult: null, temporaryDocumentName: captureTemporaryName(session) };
+  setStatus("info", captureTitle(session), "Opening an independent temporary copy.");
+  armCaptureTimeout("Photopea could not open the independent temporary copy.");
   postPhotopeaBinary(session.snapshotBuffer.slice(0));
 }
 
-function prepareCapturePass() {
+function renderTemporaryCapture() {
   const session = state.captureSession;
-  if (
-    !session ||
-    session.finalizing ||
-    session.stage !== "opening-temporary" ||
-    !session.current ||
-    !session.meta
-  ) {
-    return;
-  }
-  const current = session.current;
+  if (!session || session.finalizing || session.stage !== "opening-temporary" || !session.current) return;
   session.stage = "rendering";
-  setCaptureStatus(
-    "Capturing source…",
-    session.pass === "backdrop"
-      ? "Rendering the visible reference underneath…"
-      : "Rendering the isolated source layer…",
-  );
-  armCaptureTimeout(
-    `Photopea did not finish rendering the ${session.pass}. Close any __UV_WARP_CAPTURE__ tab without saving; the original workfile was never edited.`,
-  );
-  postPhotopeaScript(
-    makePrepareCapturePngScript({
-      mode: session.pass,
-      sourceLayerId: session.meta.layerId,
-      hideGroupName: session.hideGroupName,
-      temporaryDocumentName: current.temporaryDocumentName,
-      sourceDocumentName: session.meta.documentName,
-      sourceDocumentSource: session.meta.documentSource,
-    }),
-  );
+  setStatus("info", captureTitle(session), session.mode === "source" ? "Rendering the isolated source layer…" : "Rendering the document underneath the source…");
+  armCaptureTimeout(`Photopea did not finish rendering the ${session.mode}. Close the temporary capture tab without saving; the original workfile was never edited.`);
+  postPhotopeaScript(makePrepareCapturePngScript({
+    mode: session.mode,
+    sourceLayerId: session.sourceMeta.layerId,
+    hideGroupName: session.hideGroupName,
+    temporaryDocumentName: session.current.temporaryDocumentName,
+    sourceDocumentName: session.sourceMeta.documentName,
+    sourceDocumentSource: session.sourceMeta.documentSource,
+  }));
 }
 
-function maybeCloseCapturePass() {
+function maybeCloseTemporaryCapture() {
   const session = state.captureSession;
-  if (
-    !session ||
-    session.finalizing ||
-    session.stage !== "rendering" ||
-    !session.current?.bufferReceived ||
-    !session.current?.renderDone
-  ) {
-    return;
-  }
-  const current = session.current;
+  if (!session || session.finalizing || session.stage !== "rendering" || !session.current?.buffer || !session.current.renderDone) return;
   session.stage = "closing-temporary";
-  setCaptureStatus(
-    "Capturing source…",
-    "Closing the temporary copy and restoring the original workfile…",
-  );
-  armCaptureTimeout(
-    `The image was received, but Photopea did not close its temporary copy. Close “${current.temporaryDocumentName}” without saving; the original workfile was never edited.`,
-  );
-  postPhotopeaScript(
-    makeCloseTemporaryScript({
-      temporaryDocumentName: current.temporaryDocumentName,
-      sourceDocumentName: session.meta.documentName,
-      sourceDocumentSource: session.meta.documentSource,
-    }),
-  );
+  setStatus("info", captureTitle(session), "Closing the temporary copy and restoring the original workfile…");
+  armCaptureTimeout(`Photopea did not close “${session.current.temporaryDocumentName}”. Close it without saving; the original workfile was never edited.`);
+  postPhotopeaScript(makeCloseTemporaryScript({
+    temporaryDocumentName: session.current.temporaryDocumentName,
+    sourceDocumentName: session.sourceMeta.documentName,
+    sourceDocumentSource: session.sourceMeta.documentSource,
+  }));
 }
 
-function maybeCompleteCapturePass() {
+async function finishSourceCapture(session) {
+  state.captureMeta = session.sourceMeta;
+  state.sourceImage = await imageFromBuffer(session.current.buffer);
+  if (state.pendingSavedProject) {
+    state.project = normalizeLoadedProject(state.pendingSavedProject);
+    state.pendingSavedProject = null;
+    elements.sourceOpacity.value = String(state.project.view.sourceOpacity);
+    elements.referenceOpacity.value = String(state.project.view.referenceOpacity);
+    elements.insertMode.value = state.project.view.insertMode;
+    state.insertMode = elements.insertMode.value;
+    setMode("warp");
+    setStatus("success", "Saved warp loaded", "The saved mesh is editable again. Add a reference when you are ready to align it.");
+  } else {
+    state.project = projectFromCapture();
+    setMode("layout");
+    setStatus(state.captureMeta.smartObject ? "success" : "warning",
+      state.captureMeta.smartObject ? "Source captured" : "Source is not a Smart Object",
+      state.captureMeta.smartObject ? "Use Pen to edit the source mesh, then optionally capture a reference." : "The original remains untouched, but converting it to a Smart Object is recommended.");
+  }
+  state.undo = [];
+  state.redo = [];
+  clearSelection();
+  updateSourceSummary();
+  elements.sourceOpacityValue.textContent = `${elements.sourceOpacity.value}%`;
+  elements.referenceOpacityValue.textContent = `${elements.referenceOpacity.value}%`;
+  setBusy(false);
+  setProjectReady(true);
+  scheduleRender();
+}
+
+async function finishReferenceCapture(session) {
+  state.backdropImage = await imageFromBuffer(session.current.buffer);
+  elements.referenceName.textContent = "Captured document reference";
+  elements.referenceMeta.textContent = `${Math.round(state.captureMeta.documentWidth)} × ${Math.round(state.captureMeta.documentHeight)} px · source layer hidden`;
+  setBusy(false);
+  setProjectReady(true);
+  setStatus("success", "Reference captured", "The source mesh was preserved and can now be aligned in Warp.");
+  scheduleRender();
+}
+
+function maybeFinishTemporaryCapture() {
   const session = state.captureSession;
-  if (
-    !session ||
-    session.finalizing ||
-    session.stage !== "closing-temporary" ||
-    !session.current?.cleanupResult ||
-    !session.current?.cleanupDone
-  ) {
-    return;
-  }
-
+  if (!session || session.finalizing || session.stage !== "closing-temporary" || !session.current?.cleanupDone || !session.current.cleanupResult) return;
   const result = session.current.cleanupResult;
-  if (!result.ok) {
-    failCapture(result.message || "Photopea could not close its temporary capture document.");
+  if (!result.ok || !result.temporaryDocumentClosed || !result.sourceDocumentRestored) {
+    failCapture(result.message || "Photopea could not close the temporary capture document and restore the original.");
     return;
   }
-  if (!result.temporaryDocumentClosed) {
-    failCapture("Photopea left its temporary capture document open.");
-    return;
-  }
-  if (!result.sourceDocumentRestored) {
-    failCapture("Photopea could not restore the original workfile.");
-    return;
-  }
-
   clearCaptureTimeout(session);
-  if (session.pass === "backdrop") {
-    openCapturePass("source");
-    return;
-  }
-
-  if (!session.backdropBuffer || !session.sourceBuffer) {
-    failCapture("Photopea did not return both the source and reference images.");
-    return;
-  }
-
   session.stage = "finishing";
   session.finalizing = true;
-  finishCapture(session);
-}
-
-function maybeStartCapturePasses() {
-  const session = state.captureSession;
-  if (
-    !session ||
-    session.finalizing ||
-    session.stage !== "snapshotting" ||
-    !session.snapshotBuffer ||
-    !session.snapshotDone
-  ) {
-    return;
-  }
-  clearCaptureTimeout(session);
-  openCapturePass("backdrop");
+  const finish = session.mode === "source" ? finishSourceCapture : finishReferenceCapture;
+  finish(session).catch((error) => {
+    setBusy(false);
+    setStatus("error", "Capture failed", error.message);
+  }).finally(() => {
+    clearCaptureTimeout(session);
+    if (state.captureSession === session) state.captureSession = null;
+  });
 }
 
 function handleCaptureDone() {
   const session = state.captureSession;
   if (!session || session.finalizing) return;
-
   if (session.stage === "reading-meta") {
-    if (!session.meta) {
-      failCapture("Photopea finished without returning layer metadata.");
-      return;
-    }
-    startSnapshot();
-    return;
-  }
-  if (session.stage === "snapshotting") {
+    if (!session.sourceMeta) failCapture("Photopea finished without returning layer metadata.");
+    else startSnapshot();
+  } else if (session.stage === "snapshotting") {
     session.snapshotDone = true;
-    maybeStartCapturePasses();
-    return;
-  }
-  if (session.stage === "opening-temporary") {
-    prepareCapturePass();
-    return;
-  }
-  if (session.stage === "rendering") {
-    if (!session.current) return;
+    if (session.snapshotBuffer) openTemporaryCapture();
+  } else if (session.stage === "opening-temporary") {
+    renderTemporaryCapture();
+  } else if (session.stage === "rendering") {
     session.current.renderDone = true;
-    maybeCloseCapturePass();
-    return;
-  }
-  if (session.stage === "closing-temporary") {
-    if (!session.current) return;
+    maybeCloseTemporaryCapture();
+  } else if (session.stage === "closing-temporary") {
     session.current.cleanupDone = true;
-    maybeCompleteCapturePass();
+    maybeFinishTemporaryCapture();
   }
+}
+
+async function normalizeCaptureBuffer(value) {
+  if (value instanceof ArrayBuffer) return value;
+  if (value instanceof Blob) return value.arrayBuffer();
+  if (ArrayBuffer.isView(value)) return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+  return null;
 }
 
 async function handleCaptureBuffer(buffer) {
   const session = state.captureSession;
   if (!session || session.finalizing) return;
-
   if (session.stage === "snapshotting") {
-    if (session.snapshotBuffer) {
-      failCapture("Photopea returned more than one PSD snapshot.");
-      return;
-    }
+    if (session.snapshotBuffer) return failCapture("Photopea returned more than one PSD snapshot.");
     session.snapshotBuffer = buffer;
-    setCaptureStatus(
-      "Capturing source…",
-      "Independent copy created. Preparing reference and source renders…",
-    );
-    maybeStartCapturePasses();
+    if (session.snapshotDone) openTemporaryCapture();
     return;
   }
-
   if (session.stage !== "rendering" || !session.current) return;
-  if (session.current.bufferReceived) {
-    failCapture("Photopea returned more than one PNG for a capture pass.");
-    return;
-  }
-
-  session.current.bufferReceived = true;
-  if (session.pass === "backdrop") session.backdropBuffer = buffer;
-  else session.sourceBuffer = buffer;
-  maybeCloseCapturePass();
+  if (session.current.buffer) return failCapture("Photopea returned more than one PNG for this capture.");
+  session.current.buffer = buffer;
+  maybeCloseTemporaryCapture();
 }
 
-async function finishCapture(session) {
-  try {
-    state.captureMeta = session.meta;
-    const [backdropImage, sourceImage] = await Promise.all([
-      imageFromBuffer(session.backdropBuffer),
-      imageFromBuffer(session.sourceBuffer),
-    ]);
-    state.backdropImage = backdropImage;
-    state.sourceImage = sourceImage;
-    if (state.pendingSavedProject) {
-      state.project = normalizeLoadedProject(state.pendingSavedProject);
-      state.pendingSavedProject = null;
-      state.undo = [];
-      state.redo = [];
-      setMode("warp");
-      setStatus(
-        "success",
-        "Saved warp loaded",
-        "The saved mesh is editable again. Create output to update the result.",
-      );
-    } else {
-      state.project = projectFromCapture();
-      state.undo = [];
-      state.redo = [];
-      rebuildMesh({ recordHistory: false });
-      setStatus(
-        state.captureMeta.smartObject ? "success" : "warning",
-        state.captureMeta.smartObject ? "Source captured" : "Source is not a Smart Object",
-        state.captureMeta.smartObject
-          ? "Arrange the source mesh in Layout, then switch to Warp."
-          : "The original is still untouched, but converting it to a Smart Object is recommended.",
-      );
-    }
-    updateSourceSummary();
-    setProjectReady(true);
-    setBusy(false);
-    updateHistoryButtons();
-    scheduleRender();
-  } catch (error) {
-    state.project = null;
-    state.pendingSavedProject = null;
-    setProjectReady(false);
-    setBusy(false);
-    setStatus("error", "Capture failed", error.message);
-  } finally {
-    clearCaptureTimeout(session);
-    state.captureSession = null;
-  }
-}
-
-function beginCapture(savedProject = null) {
+function beginSourceCapture(savedProject = null) {
   if (state.busy) return;
   if (!isEmbeddedInPhotopea()) {
-    setStatus(
-      "error",
-      "Open inside Photopea",
-      "Load plugin.local.json or the hosted plugin JSON through Window → Plugins.",
-    );
+    setStatus("error", "Open inside Photopea", "Load plugin.local.json or the hosted plugin JSON through Window → Plugins.");
     return;
   }
-
   const requestId = Date.now();
   state.pendingSavedProject = savedProject;
-  state.captureMeta = null;
   state.captureSession = {
     token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
-    requestId,
-    stage: "reading-meta",
-    finalizing: false,
-    timeoutId: null,
-    hideGroupName: savedProject ? savedProject.output.groupName : "",
-    meta: null,
-    snapshotBuffer: null,
-    snapshotDone: false,
-    pass: null,
-    current: null,
-    backdropBuffer: null,
-    sourceBuffer: null,
+    requestId, mode: "source", stage: "reading-meta", finalizing: false, timeoutId: null,
+    sourceMeta: null, snapshotBuffer: null, snapshotDone: false, current: null,
+    hideGroupName: savedProject?.output?.groupName || "",
   };
   setBusy(true);
-  setCaptureStatus(
-    savedProject ? "Loading saved warp…" : "Capturing source…",
-    "Reading the selected layer without changing the original workfile.",
-  );
+  setStatus("info", savedProject ? "Loading saved warp…" : "Capturing source…", "Reading the selected layer without changing the original workfile.");
   armCaptureTimeout("Photopea did not respond while reading the selected layer.");
-  readCaptureMeta({
-    sourceLayerId: savedProject ? savedProject.source.layerId : null,
-    requestId,
-  });
+  readCaptureMeta({ sourceLayerId: savedProject?.source?.layerId ?? null, requestId });
+}
+
+function beginReferenceCapture() {
+  if (!state.project || !state.captureMeta || state.busy) return;
+  if (!isEmbeddedInPhotopea()) {
+    setStatus("error", "Open inside Photopea", "Reference capture requires the Photopea plugin panel.");
+    return;
+  }
+  const requestId = Date.now();
+  state.captureSession = {
+    token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
+    requestId, mode: "backdrop", stage: "reading-meta", finalizing: false, timeoutId: null,
+    sourceMeta: null, snapshotBuffer: null, snapshotDone: false, current: null,
+    hideGroupName: state.project.output?.groupName || "",
+  };
+  setBusy(true);
+  setStatus("info", "Capturing reference…", "Reading the captured source layer without changing the original workfile.");
+  armCaptureTimeout("Photopea did not respond while preparing the reference capture.");
+  readCaptureMeta({ sourceLayerId: state.captureMeta.layerId, requestId });
 }
 
 function serializeProject() {
   const project = {
     ...state.project,
-    source: {
-      ...state.project.source,
-      layerId: state.captureMeta.layerId,
-      layerName: state.captureMeta.layerName,
-      documentName: state.captureMeta.documentName,
-      documentSource: state.captureMeta.documentSource,
-      documentWidth: state.captureMeta.documentWidth,
-      documentHeight: state.captureMeta.documentHeight,
-      bounds: state.captureMeta.bounds,
-      smartObject: state.captureMeta.smartObject,
-    },
+    schemaVersion: 2,
+    source: { ...state.project.source, ...state.captureMeta },
     mesh: snapshotMesh(),
     view: {
+      sourceOpacity: Number(elements.sourceOpacity.value),
       referenceOpacity: Number(elements.referenceOpacity.value),
-      viewPadding: elements.viewPadding.value,
+      insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
   };
@@ -1183,12 +1034,7 @@ function serializeProject() {
 }
 
 function canvasToBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) resolve(blob);
-      else reject(new Error("The browser could not encode the warped image."));
-    }, "image/png");
-  });
+  return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The browser could not encode the warped image.")), "image/png"));
 }
 
 function blobToDataUrl(blob) {
@@ -1203,72 +1049,35 @@ function blobToDataUrl(blob) {
 async function createOutput() {
   if (!state.project || state.busy) return;
   try {
+    const faces = state.project.mesh.quads;
+    if (!faces.length || !faces.some((face) => face.length >= 3)) {
+      throw new Error("Create at least one triangle or quad face with Pen before creating output.");
+    }
     validateProjectMesh(state.project.mesh);
     const width = state.sourceImage.naturalWidth;
     const height = state.sourceImage.naturalHeight;
-    if (width * height > 180_000_000) {
-      throw new Error("This document is too large to render safely in the browser.");
-    }
-    const sourceVertices = state.project.mesh.sourceVertices.map((point) => ({
-      x: point.x * width,
-      y: point.y * height,
-    }));
-    const warpVertices = state.project.mesh.warpVertices.map((point) => ({
-      x: point.x * width,
-      y: point.y * height,
-    }));
-    const warnings = meshWarnings(
-      sourceVertices,
-      warpVertices,
-      state.project.mesh.quads,
-    );
-    if (warnings.degenerate) {
-      throw new Error("One or more mesh triangles are collapsed. Move overlapping points apart.");
-    }
-
+    if (width * height > 180_000_000) throw new Error("This document is too large to render safely in the browser.");
+    const source = state.project.mesh.sourceVertices.map((point) => ({ x: point.x * width, y: point.y * height }));
+    const target = state.project.mesh.warpVertices.map((point) => ({ x: point.x * width, y: point.y * height }));
+    const warnings = meshWarnings(source, target, state.project.mesh.quads);
+    if (warnings.degenerate) throw new Error("One or more mesh triangles are collapsed. Move overlapping points apart.");
     setBusy(true);
-    setStatus(
-      "info",
-      "Rendering output…",
-      `${width} × ${height} px · ${state.project.mesh.quads.length} connected quads`,
-    );
+    const triangleCount = triangulateQuads(faces).length;
+    setStatus("info", "Rendering output…", `${width} × ${height} px · ${triangleCount} render triangle${triangleCount === 1 ? "" : "s"}`);
     await new Promise((resolve) => requestAnimationFrame(resolve));
-
-    const outputCanvas = document.createElement("canvas");
-    outputCanvas.width = width;
-    outputCanvas.height = height;
-    const outputContext = outputCanvas.getContext("2d", { alpha: true });
-    outputContext.clearRect(0, 0, width, height);
-    drawWarpedMesh(
-      outputContext,
-      state.sourceImage,
-      sourceVertices,
-      warpVertices,
-      state.project.mesh.quads,
-      { seamOverlap: 0.7 },
-    );
-
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, { seamOverlap: 0.7 });
     const project = serializeProject();
-    const blob = await canvasToBlob(outputCanvas);
-    const dataUrl = await blobToDataUrl(blob);
-    const stateBase64 = encodeBase64Utf8(JSON.stringify(project));
     state.project = project;
-    const script = createOutputLayerScript({
-      dataUrl,
-      sourceLayerId: project.source.layerId,
-      sourceLayerName: project.source.layerName,
-      projectId: project.projectId,
-      stateBase64,
-      groupName: project.output.groupName,
-      resultName: project.output.resultName,
-      dataLayerName: project.output.dataLayerName,
-    });
-    setStatus(
-      "info",
-      "Sending output to Photopea…",
-      "The warped PNG and editable mesh data are being added to the PSD.",
-    );
-    postPhotopeaScript(script);
+    const dataUrl = await blobToDataUrl(await canvasToBlob(canvas));
+    postPhotopeaScript(createOutputLayerScript({
+      dataUrl, sourceLayerId: project.source.layerId, sourceLayerName: project.source.layerName,
+      projectId: project.projectId, stateBase64: encodeBase64Utf8(JSON.stringify(project)),
+      groupName: project.output.groupName, resultName: project.output.resultName, dataLayerName: project.output.dataLayerName,
+    }));
+    setStatus("info", "Sending output to Photopea…", "The warped PNG and editable mesh data are being added to the PSD.");
   } catch (error) {
     setBusy(false);
     setStatus("error", "Could not create output", error.message);
@@ -1280,66 +1089,42 @@ function parseSavedProjects(items) {
   for (const item of items || []) {
     try {
       const project = JSON.parse(decodeBase64Utf8(item.data));
+      if (![1, 2].includes(project.schemaVersion)) continue;
       validateProjectMesh(project.mesh);
-      project.output = project.output || {};
-      if (!project.output.groupName && item.groupName) {
-        project.output.groupName = item.groupName;
-      }
+      project.output ??= {};
+      if (!project.output.groupName) project.output.groupName = item.groupName;
       projects.push(project);
-    } catch (_) {
-      // Ignore malformed hidden text layers instead of blocking valid saved warps.
-    }
+    } catch (_) {}
   }
-  return projects.sort((a, b) =>
-    String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
-  );
+  return projects.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
 }
 
 function updateSavedProjects() {
-  elements.savedProjects.replaceChildren();
-  state.savedProjects.forEach((project) => {
+  elements.savedProjects.replaceChildren(...state.savedProjects.map((project) => {
     const option = document.createElement("option");
     option.value = project.projectId;
-    option.textContent = `${project.source.layerName} · ${
-      project.mesh.quads.length
-    } ${project.mesh.quads.length === 1 ? "quad" : "quads"}`;
-    elements.savedProjects.append(option);
-  });
-  elements.savedBar.classList.toggle("is-hidden", state.savedProjects.length === 0);
+    option.textContent = `${project.source.layerName} · ${project.mesh.quads.length} face${project.mesh.quads.length === 1 ? "" : "s"}`;
+    return option;
+  }));
+  elements.savedBar.classList.toggle("is-hidden", !state.savedProjects.length);
 }
 
 function selectedSavedProject() {
-  return state.savedProjects.find(
-    (project) => project.projectId === elements.savedProjects.value,
-  );
+  return state.savedProjects.find((project) => project.projectId === elements.savedProjects.value);
 }
 
 function loadSelectedProject() {
   const project = selectedSavedProject();
-  if (!project) return;
-  if (project.view) {
-    elements.referenceOpacity.value = String(
-      clamp(Number(project.view.referenceOpacity) || 65, 0, 100),
-    );
-    elements.referenceOpacityValue.textContent = `${elements.referenceOpacity.value}%`;
-    if (["10", "25", "50", "full"].includes(String(project.view.viewPadding))) {
-      elements.viewPadding.value = String(project.view.viewPadding);
-    }
-  }
-  beginCapture(project);
+  if (project) beginSourceCapture(project);
 }
 
 function toggleSelectedOutput() {
-  const project =
-    (state.project && state.project.output?.groupName ? state.project : null) ||
-    selectedSavedProject();
+  const project = state.project?.output?.groupName ? state.project : selectedSavedProject();
   if (!project || state.busy) return;
   setBusy(true);
   setStatus("info", "Toggling result…", "Switching between the original source and warped output.");
   toggleSavedOutput({
-    groupName: project.output.groupName,
-    sourceLayerId: project.source.layerId,
-    sourceLayerName: project.source.layerName,
+    groupName: project.output.groupName, sourceLayerId: project.source.layerId, sourceLayerName: project.source.layerName,
   });
 }
 
@@ -1347,11 +1132,7 @@ function refreshPhotopeaState() {
   if (!isEmbeddedInPhotopea()) {
     elements.layerName.textContent = "Panel preview";
     elements.layerMeta.textContent = "Install this panel in Photopea to capture a layer.";
-    setStatus(
-      "warning",
-      "Open inside Photopea",
-      "The interface is responsive here; image capture requires the Photopea panel.",
-    );
+    setStatus("warning", "Open inside Photopea", "The interface is responsive here; image capture requires the Photopea panel.");
     return;
   }
   requestSelectedLayer();
@@ -1360,12 +1141,10 @@ function refreshPhotopeaState() {
 
 async function handlePhotopeaResponse(event) {
   if (event.source !== window.parent) return;
-
   if (event.data === "done") {
     handleCaptureDone();
     return;
   }
-
   if (state.captureSession && !state.captureSession.finalizing) {
     const buffer = await normalizeCaptureBuffer(event.data);
     if (buffer) {
@@ -1373,126 +1152,96 @@ async function handlePhotopeaResponse(event) {
       return;
     }
   }
-
   const message = parsePhotopeaMessage(event.data);
   if (!message) return;
-
   if (message.type === "selection") {
     if (message.ok && !state.captureSession) {
       elements.layerName.textContent = message.name;
-      elements.layerMeta.textContent = `${Math.round(message.width)} × ${Math.round(
-        message.height,
-      )} px · ${message.smartObject ? "Smart Object" : "convert to Smart Object first"}`;
+      elements.layerMeta.textContent = `${Math.round(message.width)} × ${Math.round(message.height)} px · ${message.smartObject ? "Smart Object" : "convert to Smart Object first"}`;
     } else if (!message.ok && !state.captureSession) {
       elements.layerName.textContent = "No usable layer selected";
       elements.layerMeta.textContent = message.message;
     }
     return;
   }
-
   if (message.type === "capture-meta") {
     const session = state.captureSession;
-    if (!session || session.finalizing || session.stage !== "reading-meta") return;
-    if (message.requestId !== undefined && message.requestId !== session.requestId) return;
-    if (!message.ok) {
-      failCapture(message.message || "Photopea could not read the selected layer.");
-      return;
-    }
-    session.meta = message;
-    state.captureMeta = message;
-    setCaptureStatus(
-      "Capturing source…",
-      "Layer identified. Waiting for Photopea to finish before snapshotting…",
-    );
+    if (!session || session.finalizing || session.stage !== "reading-meta" || (message.requestId !== undefined && message.requestId !== session.requestId)) return;
+    if (!message.ok) return failCapture(message.message || "Photopea could not read the source layer.");
+    session.sourceMeta = message;
+    if (session.mode === "source") state.captureMeta = message;
+    setStatus("info", captureTitle(session), "Layer identified. Waiting for Photopea to finish before snapshotting…");
     return;
   }
-
   if (message.type === "capture-cleanup") {
     const session = state.captureSession;
-    if (!session || session.finalizing || session.stage !== "closing-temporary" || !session.current) {
-      return;
-    }
+    if (!session || session.finalizing || session.stage !== "closing-temporary") return;
     session.current.cleanupResult = message;
-    maybeCompleteCapturePass();
+    maybeFinishTemporaryCapture();
     return;
   }
-
-  if (message.type === "capture-complete") {
-    if (!message.ok) {
-      failCapture(message.message || "Capture failed.");
-    }
-    return;
-  }
-
+  if (message.type === "capture-complete" && !message.ok) return failCapture(message.message || "Capture failed.");
   if (message.type === "saved-projects") {
     if (message.ok) {
       state.savedProjects = parseSavedProjects(message.projects);
       updateSavedProjects();
-    } else {
-      setStatus("warning", "Could not read saved warps", message.message);
-    }
+    } else setStatus("warning", "Could not read saved warps", message.message);
     return;
   }
-
   if (message.type === "output-result") {
     setBusy(false);
     if (message.ok) {
-      setStatus(
-        "success",
-        "Output created",
-        "The warped result and editable mesh data are saved in the PSD.",
-      );
+      setStatus("success", "Output created", "The warped result and editable mesh data are saved in the PSD.");
       scanSavedWarps();
-    } else {
-      setStatus("error", "Photopea could not add the output", message.message);
-    }
+    } else setStatus("error", "Photopea could not add the output", message.message);
     return;
   }
-
   if (message.type === "toggle-result") {
     setBusy(false);
-    if (message.ok) {
-      setStatus(
-        "success",
-        message.visible ? "UV Warp enabled" : "UV Warp disabled",
-        message.visible ? "Showing the warped output." : "Showing the untouched source.",
-      );
-    } else {
-      setStatus("error", "Could not toggle output", message.message);
-    }
+    if (message.ok) setStatus("success", message.visible ? "UV Warp enabled" : "UV Warp disabled", message.visible ? "Showing the warped output." : "Showing the untouched source.");
+    else setStatus("error", "Could not toggle output", message.message);
   }
 }
 
-elements.captureSource.addEventListener("click", () => beginCapture());
+elements.captureSource.addEventListener("click", () => beginSourceCapture());
+elements.captureReference.addEventListener("click", beginReferenceCapture);
+elements.loadReference.addEventListener("click", () => elements.referenceFile.click());
+elements.referenceFile.addEventListener("change", async () => {
+  const [file] = elements.referenceFile.files;
+  if (!file || !state.project || state.busy) return;
+  try {
+    setBusy(true);
+    setStatus("info", "Loading reference…", "Reading the selected image.");
+    state.backdropImage = await readReferenceFile(file);
+    elements.referenceName.textContent = file.name;
+    elements.referenceMeta.textContent = `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px image`;
+    setStatus("success", "Reference loaded", "The source mesh was preserved.");
+  } catch (error) {
+    setStatus("error", "Could not load reference", error.message);
+  } finally {
+    elements.referenceFile.value = "";
+    setBusy(false);
+    scheduleRender();
+  }
+});
 elements.refreshProjects.addEventListener("click", refreshPhotopeaState);
 elements.loadProject.addEventListener("click", loadSelectedProject);
 elements.toggleOutput.addEventListener("click", toggleSelectedOutput);
 elements.modeLayout.addEventListener("click", () => setMode("layout"));
 elements.modeWarp.addEventListener("click", () => setMode("warp"));
-elements.previewToggle.addEventListener("click", () => {
-  state.preview = !state.preview;
-  setToggle(elements.previewToggle, state.preview);
-  setMode(state.mode);
-});
-elements.meshToggle.addEventListener("click", () => {
-  state.meshVisible = !state.meshVisible;
-  setToggle(elements.meshToggle, state.meshVisible);
-  scheduleRender();
-});
-elements.focusToggle.addEventListener("click", () => {
-  state.focus = !state.focus;
-  elements.shell.classList.toggle("is-focus", state.focus);
-  setToggle(elements.focusToggle, state.focus);
-  scheduleRender();
-});
-elements.preset.addEventListener("change", updateConditionalControls);
-elements.referenceOpacity.addEventListener("input", () => {
-  elements.referenceOpacityValue.textContent = `${elements.referenceOpacity.value}%`;
-  scheduleRender();
-});
-elements.viewPadding.addEventListener("change", scheduleRender);
-elements.resetLayout.addEventListener("click", () => rebuildMesh());
+elements.toolPen.addEventListener("click", () => setLayoutTool("pen"));
+elements.toolSelect.addEventListener("click", () => setLayoutTool("select"));
+elements.previewToggle.addEventListener("click", () => { state.preview = !state.preview; setToggle(elements.previewToggle, state.preview); setMode(state.mode); });
+elements.meshToggle.addEventListener("click", () => { state.meshVisible = !state.meshVisible; setToggle(elements.meshToggle, state.meshVisible); scheduleRender(); });
+elements.trianglesToggle.addEventListener("click", () => { state.trianglesVisible = !state.trianglesVisible; setToggle(elements.trianglesToggle, state.trianglesVisible); scheduleRender(); });
+elements.focusToggle.addEventListener("click", () => { state.focus = !state.focus; elements.shell.classList.toggle("is-focus", state.focus); setToggle(elements.focusToggle, state.focus); scheduleRender(); });
+elements.insertMode.addEventListener("change", () => { state.insertMode = elements.insertMode.value; state.penPreview = null; scheduleRender(); });
+for (const [input, output] of [[elements.sourceOpacity, elements.sourceOpacityValue], [elements.referenceOpacity, elements.referenceOpacityValue]]) {
+  input.addEventListener("input", () => { output.textContent = `${input.value}%`; scheduleRender(); });
+}
+elements.resetLayout.addEventListener("click", resetLayout);
 elements.resetWarp.addEventListener("click", resetWarp);
+elements.deleteSelection.addEventListener("click", deleteSelection);
 elements.createOutput.addEventListener("click", createOutput);
 elements.undo.addEventListener("click", undo);
 elements.redo.addEventListener("click", redo);
@@ -1500,25 +1249,18 @@ elements.canvas.addEventListener("pointerdown", handlePointerDown);
 elements.canvas.addEventListener("pointermove", handlePointerMove);
 elements.canvas.addEventListener("pointerup", finishPointerDrag);
 elements.canvas.addEventListener("pointercancel", finishPointerDrag);
-elements.canvas.addEventListener("keydown", handleKeyDown);
 window.addEventListener("keydown", (event) => {
-  if (
-    event.target instanceof HTMLInputElement ||
-    event.target instanceof HTMLSelectElement
-  ) {
-    return;
-  }
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   handleKeyDown(event);
 });
 window.addEventListener("message", handlePhotopeaResponse);
 window.addEventListener("resize", scheduleRender);
+new ResizeObserver(scheduleRender).observe(elements.editorWrap);
 
-const resizeObserver = new ResizeObserver(scheduleRender);
-resizeObserver.observe(elements.editorWrap);
-
-updateConditionalControls();
 setToggle(elements.previewToggle, state.preview);
 setToggle(elements.meshToggle, state.meshVisible);
+setToggle(elements.trianglesToggle, state.trianglesVisible);
+setToggle(elements.toolPen, true);
 setProjectReady(false);
 updateHistoryButtons();
 scheduleRender();

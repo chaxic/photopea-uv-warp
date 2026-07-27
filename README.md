@@ -2,13 +2,13 @@
 
 UV Warp is a panel plugin that adds an editable, connected mesh warp workflow to Photopea. It renders the deformation inside the plugin instead of relying on Photopea's scripted Perspective Warp command.
 
-**Current version:** v0.2.1
+**Current version:** v0.3.0
 
-[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.2.1)
+[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.0)
 
 ## Install
 
-1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.2.1).
+1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.0).
 2. Download `uv-warp-photopea.json`.
 3. In Photopea, choose **Window → Plugins → Add Plugin**.
 4. Select the downloaded JSON file.
@@ -18,11 +18,11 @@ No Node.js, terminal, login, or backend is required to install or use the plugin
 ## Workflow
 
 1. Convert the source image to a Smart Object and select it.
-2. Click **Capture selected**. The panel captures the isolated source and the visible document underneath as an alignment reference.
-3. In **Layout**, place the connected mesh over the source image.
-4. In **Warp**, drag the corresponding points onto the reference.
-5. Toggle **Preview** to compare the live result with the original.
-6. Click **Create output** to add the warped image to the PSD.
+2. Click **Capture selected** — only that layer is captured.
+3. Optionally **Capture reference** (document underneath) or **Load image** for alignment.
+4. In **Layout**, use the **Pen** tool (RetopoFlow PolyPen–style) to grow and bridge mesh faces over the source.
+5. Switch to **Warp**, move matching points onto the reference, and toggle **Preview** / **Triangles**.
+6. Click **Create output** to add the warped result to the PSD.
 
 The plugin creates:
 
@@ -32,17 +32,18 @@ UV Warp — Source [UVWP:id]
 └─ UV Warp Data [id]  (hidden)
 ```
 
-The original source is hidden, not modified. The hidden data layer stores the source layout, warp points, topology, project identity, and editor settings in the PSD. Use the **Saved warp** menu to reopen and update it.
+The original source is hidden, not modified. Use **On / off** to restore it. The hidden data layer stores the mesh so you can **Edit** a saved warp later.
 
 ## Features
 
 - Separate Layout and Warp modes
+- PolyPen-style contextual mesh creation and edge bridging
 - Live piecewise-affine preview
-- Connected building, regular grid, and custom grid meshes
 - Shared draggable vertices and Shift multi-selection
 - Arrow-key nudging; Shift + arrow for 10 px
 - Undo and redo inside the editor
-- Reference opacity and editor framing controls
+- Independent source and reference opacity
+- Triangles overlay for warp diagnostics
 - Focus mode for a larger canvas
 - Full-document transparent PNG output
 - PSD-backed editable project data
@@ -59,9 +60,10 @@ The original source is hidden, not modified. The hidden data layer stores the so
    npm run dev
    ```
 
-3. In Photopea, choose **Window → Plugins → Add Plugin** and load `plugin.local.json`.
-4. Open **UV Warp (Local)**.
-5. Open a PSD, select a Smart Object, and click **Capture selected**.
+   Or: `"C:\Program Files\nodejs\node.exe" scripts\serve.mjs`
+
+3. In Photopea, choose **Window → Plugins → Add Plugin** and load `plugin.local.json` or `uv-warp-photopea-local.json`.
+4. Open **UV Warp**, capture a Smart Object, and try the Pen tool.
 
 Run the automated checks with:
 
@@ -81,7 +83,7 @@ GitHub Pages serves the installer in a normal browser tab and the full plugin pa
 
 ## Implementation notes
 
-Photopea's plugin API can execute scripts, retrieve PNGs with `Document.saveToOE("png")`, and insert an image into the current document with `App.open(url, null, true)`. UV Warp uses those documented interfaces for capture and output. The actual deformation is performed locally with a connected triangle renderer derived from the visible quad mesh.
+Photopea's plugin API can execute scripts, retrieve PNGs with `Document.saveToOE("png")`, and insert an image into the current document with `App.open(url, null, true)`. UV Warp uses those documented interfaces for capture and output. The actual deformation is performed locally with a connected triangle renderer derived from the mesh faces.
 
 This is intentionally not a native Smart Filter. Photopea does not expose reliable creation of custom Perspective Warp meshes through its documented scripting API. The plugin preserves editability by saving its mesh data in the PSD and keeping the source untouched.
 

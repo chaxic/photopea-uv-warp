@@ -138,8 +138,11 @@ export function validateMesh(mesh) {
     throw new Error("The generated mesh is missing vertices or quads.");
   }
 
-  if (mesh.vertices.length < 4 || mesh.quads.length < 1) {
-    throw new Error("The generated mesh must contain at least one quadrilateral.");
+  if (mesh.vertices.length < 3) {
+    throw new Error("The mesh needs at least three vertices before it can be warped.");
+  }
+  if (mesh.quads.length < 1) {
+    throw new Error("The mesh needs at least one triangle or quad before it can be warped.");
   }
 
   for (const point of mesh.vertices) {
@@ -151,11 +154,15 @@ export function validateMesh(mesh) {
     }
   }
 
-  for (const quad of mesh.quads) {
-    if (!Array.isArray(quad) || quad.length !== 4 || new Set(quad).size !== 4) {
-      throw new Error("Every mesh face must use four distinct vertices.");
+  for (const face of mesh.quads) {
+    if (
+      !Array.isArray(face) ||
+      (face.length !== 3 && face.length !== 4) ||
+      new Set(face).size !== face.length
+    ) {
+      throw new Error("Every mesh face must be a triangle or quad with distinct vertices.");
     }
-    for (const index of quad) {
+    for (const index of face) {
       if (!Number.isInteger(index) || index < 0 || index >= mesh.vertices.length) {
         throw new Error("A mesh face refers to an invalid vertex.");
       }
