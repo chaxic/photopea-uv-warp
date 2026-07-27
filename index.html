@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>UV Warp for Photopea</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 40 40">
+            <path d="M7 11 20 5l13 6v18l-13 6-13-6Z" />
+            <path d="m7 11 13 6 13-6M20 17v18M7 20l13 6 13-6" />
+          </svg>
+        </div>
+        <div class="brand-copy">
+          <h1>UV Warp</h1>
+          <p>Editable mesh warping for Photopea</p>
+        </div>
+        <span class="version">v0.2.0</span>
+      </header>
+
+      <section class="source-bar">
+        <div class="source-summary">
+          <span class="eyebrow">Source</span>
+          <strong id="layer-name">No source captured</strong>
+          <span id="layer-meta">Select a Smart Object in Photopea.</span>
+        </div>
+        <div class="source-actions">
+          <button class="button button-subtle" id="capture-source" type="button">
+            Capture selected
+          </button>
+          <button class="icon-button" id="refresh-projects" type="button" aria-label="Refresh saved warps" title="Refresh saved warps">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20 7v5h-5M4 17v-5h5" />
+              <path d="M18.5 9A7 7 0 0 0 6 7M5.5 15A7 7 0 0 0 18 17" />
+            </svg>
+          </button>
+        </div>
+      </section>
+
+      <section class="saved-bar is-hidden" id="saved-bar">
+        <label for="saved-projects">Saved warp</label>
+        <select id="saved-projects"></select>
+        <button class="button button-subtle" id="load-project" type="button">Edit</button>
+        <button class="button button-subtle" id="toggle-output" type="button" title="Toggle the saved result and original source">On / off</button>
+      </section>
+
+      <section class="workspace-card" id="workspace-card">
+        <div class="mode-toolbar" role="toolbar" aria-label="Warp editor controls">
+          <div class="segmented" aria-label="Editing mode">
+            <button class="is-active" id="mode-layout" type="button" aria-pressed="true">Layout</button>
+            <button id="mode-warp" type="button" aria-pressed="false">Warp</button>
+          </div>
+
+          <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Show the live warped image">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M2.5 12s3.4-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.4 5.5-9.5 5.5S2.5 12 2.5 12Z" />
+              <circle cx="12" cy="12" r="2.8" />
+            </svg>
+            Preview
+          </button>
+
+          <button class="toolbar-toggle is-active" id="mesh-toggle" type="button" aria-pressed="true" title="Show or hide mesh lines">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m4 5 8-2 8 3v13l-8 2-8-3Z" />
+              <path d="m4 5 8 3 8-2M12 8v13M4 11l8 3 8-2" />
+            </svg>
+            Mesh
+          </button>
+
+          <button class="toolbar-toggle" id="focus-toggle" type="button" aria-pressed="false" title="Hide controls and enlarge the editor">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+            </svg>
+            Focus
+          </button>
+        </div>
+
+        <div class="editor-wrap" id="editor-wrap">
+          <canvas id="warp-canvas" tabindex="0" aria-label="Editable UV warp mesh"></canvas>
+          <div class="empty-state" id="empty-state">
+            <svg viewBox="0 0 48 48" aria-hidden="true">
+              <path d="m7 12 17-5 17 6v24l-17 5-17-6Z" />
+              <path d="m7 12 17 6 17-5M24 18v24M7 24l17 6 17-5" />
+            </svg>
+            <strong>Capture a source layer to begin</strong>
+            <span>The visible document underneath becomes your alignment reference.</span>
+          </div>
+          <div class="canvas-badge" id="canvas-badge">Layout · move points over the source</div>
+        </div>
+
+        <div class="editor-footer">
+          <span id="selection-hint">Drag a point. Shift-click to select several.</span>
+          <div>
+            <button class="text-button" id="undo" type="button" disabled>Undo</button>
+            <button class="text-button" id="redo" type="button" disabled>Redo</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="controls-card" id="controls-card">
+        <div class="control-row preset-row">
+          <label for="preset">Mesh</label>
+          <select id="preset">
+            <option value="building" selected>Building — roof, front + side</option>
+            <option value="grid-2">Grid — 2 × 2</option>
+            <option value="grid-3">Grid — 3 × 3</option>
+            <option value="grid-4">Grid — 4 × 4</option>
+            <option value="custom">Custom grid</option>
+            <option value="single">Single quad</option>
+          </select>
+          <button class="button button-subtle" id="reset-layout" type="button">Rebuild</button>
+        </div>
+
+        <div class="control-grid">
+          <label id="divisions-field">
+            <span>Face divisions</span>
+            <select id="divisions">
+              <option value="1">1 — simple</option>
+              <option value="2" selected>2 — balanced</option>
+              <option value="3">3 — detailed</option>
+              <option value="4">4 — dense</option>
+            </select>
+          </label>
+          <label id="orientation-field">
+            <span>Visible side</span>
+            <select id="orientation">
+              <option value="right" selected>Right side</option>
+              <option value="left">Left side</option>
+            </select>
+          </label>
+          <label class="is-hidden" id="columns-field">
+            <span>Columns</span>
+            <input id="columns" type="number" min="1" max="10" value="3" />
+          </label>
+          <label class="is-hidden" id="rows-field">
+            <span>Rows</span>
+            <input id="rows" type="number" min="1" max="10" value="3" />
+          </label>
+          <label>
+            <span>Editor view</span>
+            <select id="view-padding">
+              <option value="10">Close — 10% padding</option>
+              <option value="25" selected>Medium — 25% padding</option>
+              <option value="50">Wide — 50% padding</option>
+              <option value="full">Full document</option>
+            </select>
+          </label>
+          <label>
+            <span>Reference opacity</span>
+            <span class="range-with-output">
+              <input id="reference-opacity" type="range" min="0" max="100" value="65" />
+              <output id="reference-opacity-value">65%</output>
+            </span>
+          </label>
+        </div>
+
+        <div class="action-row">
+          <button class="button button-subtle" id="reset-warp" type="button">
+            Reset warp
+          </button>
+          <button class="button button-primary" id="create-output" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4h11l3 3v13H5zM8 4v6h8V5M8 20v-6h8v6" />
+            </svg>
+            Create output
+          </button>
+        </div>
+      </section>
+
+      <section class="status-card" id="status-card" aria-live="polite" data-tone="info">
+        <span class="status-dot" aria-hidden="true"></span>
+        <div>
+          <strong id="status-title">Ready</strong>
+          <p id="status-message">Select a Smart Object, then capture it.</p>
+        </div>
+      </section>
+
+      <details class="instructions">
+        <summary>How this workflow works</summary>
+        <ol>
+          <li>Convert the image to a Smart Object and select it.</li>
+          <li>Capture it, then arrange the mesh in <strong>Layout</strong> mode over the source.</li>
+          <li>Switch to <strong>Warp</strong> and move matching points onto the reference underneath.</li>
+          <li>Use <strong>Preview</strong> to compare live, then create the output.</li>
+        </ol>
+        <p>The result and mesh data are saved in the PSD. Choose the saved warp above to edit and update it later.</p>
+      </details>
+
+      <footer>
+        <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source on GitHub</a>
+        <span>Local processing · no login</span>
+      </footer>
+    </main>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>
