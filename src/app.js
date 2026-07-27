@@ -71,7 +71,6 @@ const elements = {
   selectionHint: document.querySelector("#selection-hint"),
   undo: document.querySelector("#undo"),
   redo: document.querySelector("#redo"),
-  insertMode: document.querySelector("#insert-mode"),
   deleteSelection: document.querySelector("#delete-selection"),
   sourceOpacity: document.querySelector("#source-opacity"),
   sourceOpacityValue: document.querySelector("#source-opacity-value"),
@@ -91,7 +90,7 @@ const elements = {
 const state = {
   mode: "layout",
   layoutTool: "pen",
-  insertMode: elements.insertMode.value,
+  insertMode: "tri-quad",
   preview: true,
   meshVisible: true,
   trianglesVisible: false,
@@ -175,7 +174,7 @@ function setProjectReady(ready) {
     elements.modeLayout, elements.modeWarp, elements.previewToggle, elements.meshToggle,
     elements.trianglesToggle, elements.connectionsToggle, elements.fullscreenToggle,
     elements.toolPen, elements.toolSelect,
-    elements.insertMode, elements.deleteSelection, elements.sourceOpacity,
+    elements.deleteSelection, elements.sourceOpacity,
     elements.referenceOpacity, elements.referenceTintToggle, elements.referenceTintColor,
     elements.backgroundColor,
     elements.resetLayout, elements.resetWarp, elements.createOutput,
@@ -993,7 +992,7 @@ const TOOL_HOTKEYS = {
   c: toggleConnections,
   d: () => setLayoutTool("pen"),
   s: () => setLayoutTool("select"),
-  e: togglePreview,
+  p: togglePreview,
   m: toggleMesh,
   t: toggleTriangles,
   f: toggleFullscreen,
@@ -1200,7 +1199,7 @@ function normalizeLoadedProject(project) {
       referenceTint: Boolean(project.view?.referenceTint),
       referenceTintColor: tintColor,
       backgroundColor,
-      insertMode: project.view?.insertMode || "tri-quad",
+      insertMode: "tri-quad",
     },
   };
 }
@@ -1318,8 +1317,7 @@ async function finishSourceCapture(session) {
     elements.referenceTintColor.value = state.project.view.referenceTintColor || "#ff4d6d";
     elements.backgroundColor.value = state.project.view.backgroundColor || "#0d0f12";
     state.referenceTint = Boolean(state.project.view.referenceTint);
-    elements.insertMode.value = state.project.view.insertMode;
-    state.insertMode = elements.insertMode.value;
+    state.insertMode = "tri-quad";
     setMode("warp");
     setStatus("success", "Saved warp loaded",
       restoreReference
@@ -1842,7 +1840,6 @@ elements.meshToggle.addEventListener("click", toggleMesh);
 elements.trianglesToggle.addEventListener("click", toggleTriangles);
 elements.connectionsToggle.addEventListener("click", toggleConnections);
 elements.fullscreenToggle.addEventListener("click", toggleFullscreen);
-elements.insertMode.addEventListener("change", () => { state.insertMode = elements.insertMode.value; state.penPreview = null; scheduleRender(); });
 for (const [input, output] of [[elements.sourceOpacity, elements.sourceOpacityValue], [elements.referenceOpacity, elements.referenceOpacityValue]]) {
   input.addEventListener("input", () => { output.textContent = `${input.value}%`; scheduleRender(); });
 }

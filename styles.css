@@ -486,14 +486,14 @@ button:disabled {
 }
 
 .control-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
 
-.control-row > label {
-  grid-column: 1 / -1;
+.preset-row .button {
+  flex: 1 1 auto;
 }
 
 .control-grid {

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.8] - 2026-07-28
+
+### Changed
+
+- Removed the Insert mode dropdown. Draw always uses Tri / Quad.
+- Preview hotkey is now `P` (was `E`).
+
 ## [0.3.7] - 2026-07-28
 
 ### Fixed
