@@ -28,8 +28,14 @@ import {
 import { drawWarpedMesh, meshWarnings, triangulateQuads } from "./warp.js";
 
 const CAPTURE_TIMEOUT_MS = 120_000;
+const OUTPUT_TIMEOUT_MS = 90_000;
 const HISTORY_LIMIT = 80;
 const EXPLODE_SCALE = 0.84;
+const ZOOM_MIN = 0.25;
+const ZOOM_MAX = 12;
+const ZOOM_STEP = 1.25;
+// Photopea stores project data in a text layer, so the payload must stay small.
+const MAX_STATE_BYTES = 400_000;
 
 const elements = {
   shell: document.querySelector(".app-shell"),
@@ -107,7 +113,12 @@ const state = {
   selectedFace: null,
   penPreview: null,
   hoverVertex: -1,
+  zoom: 1,
+  pan: { x: 0, y: 0 },
+  panDrag: null,
+  panReady: false,
   drag: null,
+  outputTimeoutId: null,
   undo: [],
   redo: [],
   renderFrame: 0,
@@ -210,6 +221,7 @@ function clearSource() {
   state.undo = [];
   state.redo = [];
   clearSelection();
+  resetZoom();
   elements.layerName.textContent = "No source captured";
   elements.layerMeta.textContent = "Select a Smart Object in Photopea.";
   setReferenceSummary("No reference loaded", "Select another layer and capture it, or load an image.");
@@ -304,14 +316,11 @@ function setMode(mode) {
   setToggle(elements.modeLayout, mode === "layout");
   setToggle(elements.modeWarp, mode === "warp");
   elements.layoutTools.classList.toggle("is-hidden", mode !== "layout");
-  const badge = mode === "layout"
-    ? `Layout · ${state.layoutTool === "pen" ? "Pen tool" : "Select tool"}`
-    : state.preview ? "Warp · live preview" : "Warp · original preview";
-  elements.canvasBadge.textContent = state.connectionsVisible ? `${badge} · connection check` : badge;
+  updateCanvasBadge();
   elements.selectionHint.textContent = mode === "layout"
     ? state.layoutTool === "pen"
-      ? "Pen (P): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge."
-      : "Select (V): click or shift-click points, then drag. Arrow keys nudge."
+      ? "Draw (D): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge."
+      : "Select (S): click or shift-click points, then drag. Arrow keys nudge."
     : "Move matching points onto the reference. Preview updates live.";
   scheduleRender();
 }
@@ -380,11 +389,20 @@ function viewportMetrics() {
   const padding = 9 * canvas.ratio;
   const availableWidth = Math.max(1, canvas.width - padding * 2);
   const availableHeight = Math.max(1, canvas.height - padding * 2);
-  const drawHeight = availableWidth / availableHeight > aspect ? availableHeight : availableWidth / aspect;
-  const drawWidth = drawHeight * aspect;
+  const fitHeight = availableWidth / availableHeight > aspect ? availableHeight : availableWidth / aspect;
+  const fitWidth = fitHeight * aspect;
+  const drawWidth = fitWidth * state.zoom;
+  const drawHeight = fitHeight * state.zoom;
+  // Keep part of the image on screen no matter how far the view is dragged.
+  const limitX = Math.max(0, (drawWidth - canvas.width) / 2) + canvas.width * 0.4;
+  const limitY = Math.max(0, (drawHeight - canvas.height) / 2) + canvas.height * 0.4;
+  state.pan.x = clamp(state.pan.x, -limitX, limitX);
+  state.pan.y = clamp(state.pan.y, -limitY, limitY);
   return {
-    ...canvas, view, x: (canvas.width - drawWidth) / 2, y: (canvas.height - drawHeight) / 2,
-    drawWidth, drawHeight,
+    ...canvas, view,
+    x: (canvas.width - drawWidth) / 2 + state.pan.x,
+    y: (canvas.height - drawHeight) / 2 + state.pan.y,
+    drawWidth, drawHeight, fitWidth, fitHeight,
   };
 }
 
@@ -395,11 +413,57 @@ function documentToCanvas(point, metrics) {
   };
 }
 
-function canvasToDocument(point, metrics) {
-  return clampPoint({
+function canvasToDocumentRaw(point, metrics) {
+  return {
     x: metrics.view.left + ((point.x - metrics.x) / metrics.drawWidth) * (metrics.view.right - metrics.view.left),
     y: metrics.view.top + ((point.y - metrics.y) / metrics.drawHeight) * (metrics.view.bottom - metrics.view.top),
-  });
+  };
+}
+
+function canvasToDocument(point, metrics) {
+  return clampPoint(canvasToDocumentRaw(point, metrics));
+}
+
+function updateCanvasBadge() {
+  const tool = state.layoutTool === "pen" ? "Draw tool" : "Select tool";
+  const base = state.mode === "layout"
+    ? `Layout · ${tool}`
+    : state.preview ? "Warp · live preview" : "Warp · original preview";
+  const parts = [base, `${Math.round(state.zoom * 100)}%`];
+  if (state.connectionsVisible) parts.push("connection check");
+  elements.canvasBadge.textContent = parts.join(" · ");
+}
+
+/** Zoom around a canvas-space anchor so the document point under it stays put. */
+function setZoom(nextZoom, anchor = null) {
+  const target = clamp(nextZoom, ZOOM_MIN, ZOOM_MAX);
+  if (Math.abs(target - state.zoom) < 1e-4) return;
+  const before = viewportMetrics();
+  const focus = anchor || { x: before.width / 2, y: before.height / 2 };
+  const anchored = canvasToDocumentRaw(focus, before);
+  state.zoom = target;
+  const after = viewportMetrics();
+  const moved = documentToCanvas(anchored, after);
+  state.pan.x += focus.x - moved.x;
+  state.pan.y += focus.y - moved.y;
+  updateCanvasBadge();
+  scheduleRender();
+}
+
+function zoomIn() {
+  setZoom(state.zoom * ZOOM_STEP);
+}
+
+function zoomOut() {
+  setZoom(state.zoom / ZOOM_STEP);
+}
+
+function resetZoom() {
+  state.zoom = 1;
+  state.pan.x = 0;
+  state.pan.y = 0;
+  updateCanvasBadge();
+  scheduleRender();
 }
 
 function drawImageCrop(context, image, metrics, opacity) {
@@ -421,8 +485,10 @@ function drawReferenceLayer(context, metrics) {
     drawImageCrop(context, state.backdropImage, metrics, opacity);
     return;
   }
-  const width = Math.max(1, Math.round(metrics.drawWidth));
-  const height = Math.max(1, Math.round(metrics.drawHeight));
+  // Tint in a viewport-sized buffer: a zoomed view would otherwise need a
+  // canvas as large as the scaled image, which browsers refuse to allocate.
+  const width = Math.max(1, Math.round(metrics.width));
+  const height = Math.max(1, Math.round(metrics.height));
   const offscreen = drawReferenceLayer.offscreen || (drawReferenceLayer.offscreen = document.createElement("canvas"));
   if (offscreen.width !== width || offscreen.height !== height) {
     offscreen.width = width;
@@ -434,7 +500,7 @@ function drawReferenceLayer(context, metrics) {
   tint.drawImage(
     state.backdropImage,
     0, 0, state.backdropImage.naturalWidth, state.backdropImage.naturalHeight,
-    0, 0, width, height,
+    metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight,
   );
   tint.globalCompositeOperation = "source-atop";
   tint.fillStyle = elements.referenceTintColor.value || "#ff4d6d";
@@ -445,7 +511,7 @@ function drawReferenceLayer(context, metrics) {
   context.beginPath();
   context.rect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
   context.clip();
-  context.drawImage(offscreen, metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
+  context.drawImage(offscreen, 0, 0);
   context.restore();
 }
 
@@ -741,8 +807,27 @@ function applyPen(pointerDocument, metrics) {
   scheduleRender();
 }
 
+function beginPan(event) {
+  const metrics = viewportMetrics();
+  state.panDrag = {
+    pointerId: event.pointerId,
+    start: pointerPosition(event, metrics),
+    origin: { ...state.pan },
+  };
+  try { elements.canvas.setPointerCapture(event.pointerId); } catch (_) {}
+  elements.canvas.classList.add("is-panning");
+  event.preventDefault();
+}
+
 function handlePointerDown(event) {
-  if (!state.project || state.busy || event.button !== 0) return;
+  if (!state.project || state.busy) return;
+  // Middle-drag or Space-drag pans the view at any zoom level.
+  if (event.button === 1 || (event.button === 0 && state.panReady)) {
+    elements.canvas.focus();
+    beginPan(event);
+    return;
+  }
+  if (event.button !== 0) return;
   elements.canvas.focus();
   const metrics = viewportMetrics();
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
@@ -786,6 +871,15 @@ function handlePointerDown(event) {
 function handlePointerMove(event) {
   if (!state.project || state.busy) return;
   const metrics = viewportMetrics();
+  if (state.panDrag) {
+    if (state.panDrag.pointerId !== event.pointerId) return;
+    const current = pointerPosition(event, metrics);
+    state.pan.x = state.panDrag.origin.x + (current.x - state.panDrag.start.x);
+    state.pan.y = state.panDrag.origin.y + (current.y - state.panDrag.start.y);
+    scheduleRender();
+    event.preventDefault();
+    return;
+  }
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
   if (!state.drag) {
     const hovered = nearestVertex(pointerDocument, activeVertices(), vertexHitThreshold(metrics));
@@ -820,6 +914,13 @@ function handlePointerMove(event) {
 }
 
 function finishPointerDrag(event) {
+  if (state.panDrag && state.panDrag.pointerId === event.pointerId) {
+    try { elements.canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+    state.panDrag = null;
+    elements.canvas.classList.remove("is-panning");
+    scheduleRender();
+    return;
+  }
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
   if (state.drag.changed) {
     if (state.mode === "warp") state.project.mesh.warpLinked = false;
@@ -888,13 +989,18 @@ function nudgeSelection(event) {
 const TOOL_HOTKEYS = {
   1: () => setMode("layout"),
   2: () => setMode("warp"),
-  3: toggleConnections,
-  p: () => setLayoutTool("pen"),
-  v: () => setLayoutTool("select"),
+  c: toggleConnections,
+  d: () => setLayoutTool("pen"),
+  s: () => setLayoutTool("select"),
   e: togglePreview,
   m: toggleMesh,
   t: toggleTriangles,
   f: toggleFullscreen,
+  "+": zoomIn,
+  "=": zoomIn,
+  "-": zoomOut,
+  _: zoomOut,
+  0: resetZoom,
 };
 
 function handleKeyDown(event) {
@@ -910,6 +1016,16 @@ function handleKeyDown(event) {
     return;
   }
   if (modifier || event.altKey) return;
+  // Space only arms panning from the canvas or page, never from a focused button.
+  if (event.code === "Space" && state.project &&
+      (event.target === elements.canvas || event.target === document.body)) {
+    event.preventDefault();
+    if (!state.panReady) {
+      state.panReady = true;
+      elements.canvas.classList.add("is-pan-ready");
+    }
+    return;
+  }
   if (event.key === "Escape" && state.project) {
     event.preventDefault();
     clearSelection();
@@ -1012,33 +1128,24 @@ function makeOutputNames(layerName, projectId, existingOutput = null) {
   };
 }
 
-function imageToDataUrl(image, { maxEdge = 2200, type = "image/jpeg", quality = 0.82 } = {}) {
-  const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
-  const width = Math.max(1, Math.round(image.naturalWidth * scale));
-  const height = Math.max(1, Math.round(image.naturalHeight * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d").drawImage(image, 0, 0, width, height);
-  return canvas.toDataURL(type, quality);
-}
-
+/**
+ * Reference info saved into the PSD. Only lightweight metadata is stored:
+ * pixels live in a Photopea text layer otherwise, which makes the output
+ * script large enough to stall Photopea. Layer references are re-rendered
+ * from the PSD on Edit, which is both smaller and higher fidelity.
+ */
 function buildReferencePayload() {
   if (!state.backdropImage || !state.referenceMeta) return null;
-  const imageDataUrl = state.referenceMeta.imageDataUrl
-    || imageToDataUrl(state.backdropImage);
   if (state.referenceMeta.kind === "layer") {
     return {
       kind: "layer",
       layerId: state.referenceMeta.layerId,
       layerName: state.referenceMeta.layerName,
-      imageDataUrl,
     };
   }
   return {
     kind: "image",
     fileName: state.referenceMeta.fileName || "reference.png",
-    imageDataUrl,
   };
 }
 
@@ -1222,11 +1329,12 @@ async function finishSourceCapture(session) {
     setMode("layout");
     setStatus(state.captureMeta.smartObject ? "success" : "warning",
       state.captureMeta.smartObject ? "Source captured" : "Source is not a Smart Object",
-      state.captureMeta.smartObject ? "Use Pen to edit the source mesh, then optionally capture a reference." : "The original remains untouched, but converting it to a Smart Object is recommended.");
+      state.captureMeta.smartObject ? "Use Draw to edit the source mesh, then optionally capture a reference." : "The original remains untouched, but converting it to a Smart Object is recommended.");
   }
   state.undo = [];
   state.redo = [];
   clearSelection();
+  resetZoom();
   updateSourceSummary();
   elements.sourceOpacityValue.textContent = `${elements.sourceOpacity.value}%`;
   elements.referenceOpacityValue.textContent = `${elements.referenceOpacity.value}%`;
@@ -1246,7 +1354,6 @@ async function finishReferenceCapture(session) {
     kind: "layer",
     layerId: session.sourceMeta.layerId,
     layerName: session.sourceMeta.layerName,
-    imageDataUrl: imageToDataUrl(state.backdropImage),
   };
   setReferenceSummary(
     session.sourceMeta.layerName,
@@ -1286,29 +1393,32 @@ async function restoreSavedReference(reference) {
     });
     return;
   }
-  if (reference.imageDataUrl) {
-    try {
-      setBusy(true);
-      state.backdropImage = await imageFromDataUrl(reference.imageDataUrl);
-      state.referenceMeta = {
-        kind: reference.kind === "layer" ? "layer" : "image",
-        layerId: reference.layerId,
-        layerName: reference.layerName,
-        fileName: reference.fileName || reference.layerName || "Saved reference",
-        imageDataUrl: reference.imageDataUrl,
-      };
-      setReferenceSummary(
-        state.referenceMeta.fileName || state.referenceMeta.layerName || "Saved reference",
-        `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px · restored`,
-      );
-      setStatus("success", "Reference restored", "Source and reference are ready. Adjust the mesh, then Create output to update.");
-    } catch (error) {
-      setStatus("warning", "Source loaded without reference", error.message);
-    } finally {
-      setBusy(false);
-      setProjectReady(true);
-      scheduleRender();
-    }
+  if (!reference.imageDataUrl) {
+    setStatus("info", "Saved warp loaded",
+      `The reference was the loaded image “${reference.fileName || "reference"}”, which is not stored in the PSD. Use Load image to add it again.`);
+    return;
+  }
+  try {
+    setBusy(true);
+    state.backdropImage = await imageFromDataUrl(reference.imageDataUrl);
+    state.referenceMeta = {
+      kind: reference.kind === "layer" ? "layer" : "image",
+      layerId: reference.layerId,
+      layerName: reference.layerName,
+      fileName: reference.fileName || reference.layerName || "Saved reference",
+      imageDataUrl: reference.imageDataUrl,
+    };
+    setReferenceSummary(
+      state.referenceMeta.fileName || state.referenceMeta.layerName || "Saved reference",
+      `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px · restored`,
+    );
+    setStatus("success", "Reference restored", "Source and reference are ready. Adjust the mesh, then Create output to update.");
+  } catch (error) {
+    setStatus("warning", "Source loaded without reference", error.message);
+  } finally {
+    setBusy(false);
+    setProjectReady(true);
+    scheduleRender();
   }
 }
 
@@ -1466,12 +1576,29 @@ function blobToDataUrl(blob) {
   });
 }
 
+function clearOutputTimeout() {
+  if (!state.outputTimeoutId) return;
+  clearTimeout(state.outputTimeoutId);
+  state.outputTimeoutId = null;
+}
+
+/** Photopea can swallow a script silently, so never leave the panel spinning. */
+function armOutputTimeout() {
+  clearOutputTimeout();
+  state.outputTimeoutId = setTimeout(() => {
+    state.outputTimeoutId = null;
+    setBusy(false);
+    setStatus("error", "Photopea did not confirm the output",
+      "The original workfile was not changed. Check the Photopea tab for a partial UV Warp group, then try Create output again.");
+  }, OUTPUT_TIMEOUT_MS);
+}
+
 async function createOutput() {
   if (!state.project || state.busy) return;
   try {
     const faces = state.project.mesh.quads;
     if (!faces.length || !faces.some((face) => face.length >= 3)) {
-      throw new Error("Create at least one triangle or quad face with Pen before creating output.");
+      throw new Error("Create at least one triangle or quad face with Draw before creating output.");
     }
     validateProjectMesh(state.project.mesh);
     const width = state.sourceImage.naturalWidth;
@@ -1491,17 +1618,22 @@ async function createOutput() {
     drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, { seamOverlap: 0.7 });
     const previousResultName = state.project.output?.resultName || "";
     const project = serializeProject();
+    const stateBase64 = encodeBase64Utf8(JSON.stringify(project));
+    if (stateBase64.length > MAX_STATE_BYTES) {
+      throw new Error(`The mesh data is too large to store in the PSD (${Math.round(stateBase64.length / 1024)} KB). Reduce the number of faces and try again.`);
+    }
     state.project = project;
     if (state.captureMeta) state.captureMeta.layerName = project.output.originalName;
     updateSourceSummary();
     const dataUrl = await blobToDataUrl(await canvasToBlob(canvas));
+    armOutputTimeout();
     postPhotopeaScript(createOutputLayerScript({
       dataUrl,
       sourceLayerId: project.source.layerId,
       sourceLayerName: project.source.layerName,
       originalLayerName: project.output.originalName,
       projectId: project.projectId,
-      stateBase64: encodeBase64Utf8(JSON.stringify(project)),
+      stateBase64,
       groupName: project.output.groupName,
       resultName: project.output.resultName,
       previousResultName,
@@ -1509,6 +1641,7 @@ async function createOutput() {
     }));
     setStatus("info", "Sending output to Photopea…", "Renaming the source with [Original] and adding the [Warped] result.");
   } catch (error) {
+    clearOutputTimeout();
     setBusy(false);
     setStatus("error", "Could not create output", error.message);
   }
@@ -1622,6 +1755,7 @@ async function handlePhotopeaResponse(event) {
     return;
   }
   if (message.type === "output-result") {
+    clearOutputTimeout();
     setBusy(false);
     if (message.ok) {
       if (message.originalLayerName) {
@@ -1704,15 +1838,36 @@ elements.canvas.addEventListener("pointermove", handlePointerMove);
 elements.canvas.addEventListener("pointerup", finishPointerDrag);
 elements.canvas.addEventListener("pointercancel", finishPointerDrag);
 elements.canvas.addEventListener("pointerleave", () => {
-  if (state.drag) return;
+  if (state.drag || state.panDrag) return;
   const hadHint = state.hoverVertex >= 0 || state.penPreview;
   state.hoverVertex = -1;
   state.penPreview = null;
   if (hadHint) scheduleRender();
 });
+elements.canvas.addEventListener("wheel", (event) => {
+  if (!state.project || state.busy) return;
+  event.preventDefault();
+  const metrics = viewportMetrics();
+  // Firefox reports lines or pages instead of pixels, so normalise first.
+  const perUnit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? metrics.height : 1;
+  setZoom(state.zoom * Math.exp(-event.deltaY * perUnit * 0.0015), pointerPosition(event, metrics));
+}, { passive: false });
+elements.canvas.addEventListener("auxclick", (event) => {
+  if (event.button === 1) event.preventDefault();
+});
 window.addEventListener("keydown", (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   handleKeyDown(event);
+});
+window.addEventListener("keyup", (event) => {
+  if (event.code !== "Space" || !state.panReady) return;
+  state.panReady = false;
+  elements.canvas.classList.remove("is-pan-ready");
+});
+window.addEventListener("blur", () => {
+  if (!state.panReady) return;
+  state.panReady = false;
+  elements.canvas.classList.remove("is-pan-ready");
 });
 window.addEventListener("message", handlePhotopeaResponse);
 window.addEventListener("resize", scheduleRender);

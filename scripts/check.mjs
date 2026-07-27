@@ -71,7 +71,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.3.3"',
+  'src="./?preview=1&v=0.3.5"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -103,6 +103,10 @@ for (const requirement of [
   "makeOutputNames",
   "restoreSavedReference",
   "originalLayerName",
+  "setZoom",
+  "resetZoom",
+  "armOutputTimeout",
+  "MAX_STATE_BYTES",
 ]) {
   if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);

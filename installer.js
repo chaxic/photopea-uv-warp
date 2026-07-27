@@ -10,12 +10,12 @@ if (embedded) {
     document.body.classList.add("is-local");
     const version = pluginApp?.querySelector(".version");
     const subtitle = pluginApp?.querySelector(".brand-copy p");
-    if (version) version.textContent = "v0.3.3 LOCAL";
+    if (version) version.textContent = "v0.3.5 LOCAL";
     if (subtitle) subtitle.textContent = "Local test build · 127.0.0.1:4173";
   }
   installPage?.remove();
   pluginApp?.removeAttribute("hidden");
-  await import(`./src/app.js?v=0.3.3&local=${isLocalHost ? "1" : "0"}`);
+  await import(`./src/app.js?v=0.3.5&local=${isLocalHost ? "1" : "0"}`);
 } else {
   document.body.classList.add("is-installer");
   pluginApp?.remove();

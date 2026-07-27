@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.5] - 2026-07-27
+
+### Fixed
+
+- **Create output** no longer hangs. Saved warps stored a full copy of the reference image in the PSD text layer, which made the Photopea script large enough to stall silently.
+- Create output now reports a real error instead of spinning forever if Photopea never confirms the result.
+
+### Added
+
+- Adjustable zoom: `+` / `-` to zoom, `0` to reset to fit, scroll wheel to zoom at the pointer.
+- Pan the view with `Space`+drag or a middle-mouse drag. The canvas badge shows the current zoom level.
+
+### Changed
+
+- Editing a saved warp re-captures the reference layer from the PSD instead of restoring a stored copy, so the reference is sharper. A reference added with **Load image** is not stored in the PSD and must be loaded again.
+
+## [0.3.4] - 2026-07-27
+
+### Changed
+
+- Renamed the **Pen** tool to **Draw**. Hotkeys are now `D` Draw, `S` Select, and `C` Connections (was `P` / `V` / `3`).
+
 ## [0.3.3] - 2026-07-27
 
 ### Added

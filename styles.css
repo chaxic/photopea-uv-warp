@@ -394,6 +394,14 @@ button:disabled {
   cursor: grabbing;
 }
 
+#warp-canvas.is-pan-ready {
+  cursor: grab;
+}
+
+#warp-canvas.is-panning {
+  cursor: grabbing;
+}
+
 .empty-state {
   position: absolute;
   inset: 0;

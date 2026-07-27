@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.3.3" />
-    <link rel="stylesheet" href="./installer.css?v=0.3.3" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.5" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.5" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.3.3</span>
+            <span class="install-version">v0.3.5</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.3.3</strong>
+              <strong>v0.3.5</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.3.3"
+              src="./?preview=1&v=0.3.5"
               loading="eager"
             ></iframe>
           </div>
@@ -140,7 +140,7 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.3.3</span>
+        <span class="version">v0.3.5</span>
       </header>
 
       <section class="workspace-card" id="workspace-card">
@@ -151,8 +151,8 @@
           </div>
 
           <div class="segmented" id="layout-tools" aria-label="Layout tools">
-            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Pen tool (P) — create, connect, and bridge faces">Pen</button>
-            <button id="tool-select" type="button" aria-pressed="false" title="Select tool (V) — select and move points">Select</button>
+            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Draw tool (D) — create, connect, and bridge faces">Draw</button>
+            <button id="tool-select" type="button" aria-pressed="false" title="Select tool (S) — select and move points">Select</button>
           </div>
 
           <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Preview (E) — show the live warped image">
@@ -179,7 +179,7 @@
             Triangles
           </button>
 
-          <button class="toolbar-toggle" id="connections-toggle" type="button" aria-pressed="false" title="Connections (3) — pull faces apart to show which points are welded together">
+          <button class="toolbar-toggle" id="connections-toggle" type="button" aria-pressed="false" title="Connections (C) — pull faces apart to show which points are welded together">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="6" cy="6" r="2.4" />
               <circle cx="18" cy="6" r="2.4" />
@@ -208,11 +208,11 @@
             <strong>Capture a source layer to begin</strong>
             <span>Only the selected layer is captured. Add a reference separately for alignment.</span>
           </div>
-          <div class="canvas-badge" id="canvas-badge">Layout · Pen tool</div>
+          <div class="canvas-badge" id="canvas-badge">Layout · Draw tool</div>
         </div>
 
         <div class="editor-footer">
-          <span id="selection-hint">Pen (P): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge.</span>
+          <span id="selection-hint">Draw (D): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge.</span>
           <div>
             <button class="text-button" id="undo" type="button" disabled>Undo</button>
             <button class="text-button" id="redo" type="button" disabled>Redo</button>
@@ -344,13 +344,16 @@
           <summary>Hotkeys</summary>
           <dl class="hotkeys">
             <div><dt><kbd>1</kbd> / <kbd>2</kbd></dt><dd>Layout / Warp mode</dd></div>
-            <div><dt><kbd>P</kbd></dt><dd>Pen tool</dd></div>
-            <div><dt><kbd>V</kbd></dt><dd>Select tool</dd></div>
+            <div><dt><kbd>D</kbd></dt><dd>Draw tool</dd></div>
+            <div><dt><kbd>S</kbd></dt><dd>Select tool</dd></div>
             <div><dt><kbd>E</kbd></dt><dd>Live warp preview</dd></div>
             <div><dt><kbd>M</kbd></dt><dd>Mesh lines</dd></div>
             <div><dt><kbd>T</kbd></dt><dd>Triangles</dd></div>
-            <div><dt><kbd>3</kbd></dt><dd>Connections check</dd></div>
+            <div><dt><kbd>C</kbd></dt><dd>Connections check</dd></div>
             <div><dt><kbd>F</kbd></dt><dd>Fullscreen</dd></div>
+            <div><dt><kbd>+</kbd> / <kbd>-</kbd></dt><dd>Zoom in / out (or scroll wheel)</dd></div>
+            <div><dt><kbd>0</kbd></dt><dd>Reset zoom to fit</dd></div>
+            <div><dt><kbd>Space</kbd>+drag</dt><dd>Pan the view (or middle-drag)</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Clear selection</dd></div>
             <div><dt><kbd>Del</kbd></dt><dd>Delete selected points</dd></div>
             <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Nudge (hold <kbd>Shift</kbd> for 10 px)</dd></div>
@@ -363,7 +366,7 @@
           <ol>
             <li>Select a layer and <strong>Capture selected</strong> under Source — only that layer is captured.</li>
             <li>Optionally select another layer and <strong>Capture selected</strong> under Reference, or load an image. Use <strong>Reference tint</strong> if the images look too similar.</li>
-            <li>In <strong>Layout</strong>, use the <strong>Pen</strong> tool to extrude edges, grow triangles and quads, and bridge two edges to fill gaps. Click an existing point to weld onto it.</li>
+            <li>In <strong>Layout</strong>, use the <strong>Draw</strong> tool to extrude edges, grow triangles and quads, and bridge two edges to fill gaps. Click an existing point to weld onto it.</li>
             <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
           </ol>
         </details>
@@ -378,19 +381,20 @@ UV Warp · building1-3 [UVWP:id]
           <ul>
             <li><strong>… [Original]</strong> — your source layer with <code>[Original]</code> appended. Content is unchanged; only the name and visibility change. Use <strong>On / off</strong> to show it again.</li>
             <li><strong>… [Warped]</strong> — the warped image. Safe to show, hide, or move within the group.</li>
-            <li><strong>Mesh Data — do not edit</strong> — stores the mesh (and reference info) so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.</li>
+            <li><strong>Mesh Data — do not edit</strong> — stores the mesh and which layer was used as the reference, so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.</li>
             <li><strong>UVWP:id</strong> in the group name — leave it alone. The plugin uses it to find this warp.</li>
           </ul>
-          <p><strong>To edit a finished warp:</strong> open this panel → pick the warp under <strong>Saved warp</strong> → <strong>Edit</strong>. The source and reference load automatically → adjust Layout/Warp → <strong>Create output</strong> again to update the Warped layer.</p>
+          <p><strong>To edit a finished warp:</strong> open this panel → pick the warp under <strong>Saved warp</strong> → <strong>Edit</strong>. The source loads, and a captured reference layer is re-captured from the PSD automatically → adjust Layout/Warp → <strong>Create output</strong> again to update the Warped layer.</p>
+          <p>A reference added with <strong>Load image</strong> is not stored in the PSD, so load that file again after editing.</p>
         </details>
       </div>
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.3.3 · local processing · no login</span>
+        <span>v0.3.5 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.3.3"></script>
+    <script type="module" src="./installer.js?v=0.3.5"></script>
   </body>
 </html>
