@@ -4,11 +4,131 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="UV Warp is a Photopea plugin for laying out and warping images with an editable connected mesh."
+    />
     <title>UV Warp for Photopea</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css?v=0.2.0" />
+    <link rel="stylesheet" href="./installer.css?v=0.2.0" />
   </head>
   <body>
-    <main class="app-shell">
+    <main class="install-page" id="install-page" hidden>
+      <div class="install-layout">
+        <section class="install-copy">
+          <div class="install-eyebrow">
+            <span class="install-eyebrow-dot" aria-hidden="true"></span>
+            Photopea plugin
+            <span class="install-version">v0.2.0</span>
+          </div>
+
+          <h1>Warp images with a UV-style mesh.</h1>
+          <p class="install-intro">
+            Create a connected layout over your source, then move its matching
+            points to align artwork with buildings, boxes, perspective surfaces,
+            and other complex shapes.
+          </p>
+
+          <div class="release-meta" aria-label="Current release information">
+            <div>
+              <span>Current version</span>
+              <strong>v0.2.0</strong>
+            </div>
+            <div>
+              <span>Workflow</span>
+              <strong>Layout → Warp</strong>
+            </div>
+            <div>
+              <span>Processing</span>
+              <strong>Local in browser</strong>
+            </div>
+          </div>
+
+          <div class="feature-pills" aria-label="Plugin features">
+            <span>Live preview</span>
+            <span>Connected mesh</span>
+            <span>Editable projects</span>
+            <span>Original preserved</span>
+          </div>
+
+          <div class="install-actions">
+            <a
+              class="download-button"
+              href="./uv-warp-photopea.json"
+              download="uv-warp-photopea.json"
+            >
+              <svg viewBox="0 0 20 20" aria-hidden="true">
+                <path d="M10 3.5v8m0 0 3-3m-3 3-3-3M4 14.5v2h12v-2"></path>
+              </svg>
+              Download plugin
+            </a>
+            <a href="https://www.photopea.com" target="_blank" rel="noreferrer">
+              Open Photopea <span aria-hidden="true">↗</span>
+            </a>
+            <a
+              href="https://github.com/chaxic/photopea-uv-warp"
+              target="_blank"
+              rel="noreferrer"
+            >
+              View source <span aria-hidden="true">↗</span>
+            </a>
+          </div>
+
+          <ol class="install-steps">
+            <li>
+              <span>1</span>
+              <div>
+                <strong>Download the installer</strong>
+                <p>Save the small UV Warp JSON file using the button above.</p>
+              </div>
+            </li>
+            <li>
+              <span>2</span>
+              <div>
+                <strong>Open Window → Plugins</strong>
+                <p>Choose Add Plugin and select the downloaded JSON file.</p>
+              </div>
+            </li>
+            <li>
+              <span>3</span>
+              <div>
+                <strong>Capture, lay out, and warp</strong>
+                <p>
+                  Select a Smart Object, capture it, position the source mesh,
+                  then switch to Warp and create the output.
+                </p>
+              </div>
+            </li>
+          </ol>
+
+          <p class="privacy-note">
+            Runs locally in Photopea. No document, image, or mesh data is
+            uploaded.
+          </p>
+        </section>
+
+        <section class="preview-wrap" aria-label="UV Warp plugin preview">
+          <div class="preview-label">
+            <span>Plugin preview</span>
+            <span>chaxic.github.io/photopea-uv-warp</span>
+          </div>
+          <div class="preview-window">
+            <div class="preview-window-bar" aria-hidden="true">
+              <span></span><span></span><span></span>
+              <strong>UV Warp · Photopea panel</strong>
+            </div>
+            <iframe
+              title="UV Warp plugin panel preview"
+              src="./?preview=1&v=0.2.0"
+              loading="eager"
+            ></iframe>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <main class="app-shell" id="plugin-app" hidden>
       <header class="app-header">
         <div class="brand-mark" aria-hidden="true">
           <svg viewBox="0 0 40 40">
@@ -197,6 +317,6 @@
       </footer>
     </main>
 
-    <script type="module" src="./src/app.js"></script>
+    <script type="module" src="./installer.js?v=0.2.0"></script>
   </body>
 </html>

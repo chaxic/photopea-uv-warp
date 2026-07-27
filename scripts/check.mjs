@@ -5,12 +5,15 @@ const root = resolve(new URL("..", import.meta.url).pathname);
 const requiredFiles = [
   "index.html",
   "styles.css",
+  "installer.css",
+  "installer.js",
   "src/app.js",
   "src/mesh.js",
   "src/warp.js",
   "src/photopea.js",
   "assets/icon.svg",
   "plugin.json",
+  "uv-warp-photopea.json",
   "plugin.local.json",
   "README.md",
   "LICENSE",
@@ -22,6 +25,9 @@ for (const relativePath of requiredFiles) {
 
 const index = await readFile(resolve(root, "index.html"), "utf8");
 const plugin = JSON.parse(await readFile(resolve(root, "plugin.json"), "utf8"));
+const installerPlugin = JSON.parse(
+  await readFile(resolve(root, "uv-warp-photopea.json"), "utf8"),
+);
 const localPlugin = JSON.parse(await readFile(resolve(root, "plugin.local.json"), "utf8"));
 
 for (const id of [
@@ -37,10 +43,25 @@ for (const id of [
   if (!index.includes(`id="${id}"`)) throw new Error(`index.html is missing #${id}`);
 }
 
-for (const manifest of [plugin, localPlugin]) {
+for (const manifest of [plugin, installerPlugin, localPlugin]) {
   if (!manifest.name || !manifest.url || !manifest.icon) {
     throw new Error("Each Photopea plugin manifest requires name, url, and icon.");
   }
+}
+
+for (const marker of [
+  'id="install-page"',
+  'id="plugin-app"',
+  'href="./uv-warp-photopea.json"',
+  'src="./?preview=1&v=0.2.0"',
+]) {
+  if (!index.includes(marker)) {
+    throw new Error(`index.html is missing installer marker: ${marker}`);
+  }
+}
+
+if (plugin.url !== installerPlugin.url || plugin.icon !== installerPlugin.icon) {
+  throw new Error("The production and downloadable manifests must stay in sync.");
 }
 
 const app = await readFile(resolve(root, "src/app.js"), "utf8");
@@ -56,4 +77,4 @@ for (const requirement of [
   }
 }
 
-console.log(`Checked ${requiredFiles.length} addon files and both plugin manifests.`);
+console.log(`Checked ${requiredFiles.length} addon files and all plugin manifests.`);

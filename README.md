@@ -2,6 +2,19 @@
 
 UV Warp is a panel plugin that adds an editable, connected mesh warp workflow to Photopea. It renders the deformation inside the plugin instead of relying on Photopea's scripted Perspective Warp command.
 
+**Current version:** v0.2.0
+
+[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.2.0)
+
+## Install
+
+1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.2.0).
+2. Download `uv-warp-photopea.json`.
+3. In Photopea, choose **Window → Plugins → Add Plugin**.
+4. Select the downloaded JSON file.
+
+No Node.js, terminal, login, or backend is required to install or use the plugin.
+
 ## Workflow
 
 1. Convert the source image to a Smart Object and select it.
@@ -64,7 +77,7 @@ The included production manifest expects:
 - Repository: `https://github.com/chaxic/photopea-uv-warp`
 - Panel: `https://chaxic.github.io/photopea-uv-warp/`
 
-Enable GitHub Pages from the repository root, then load the hosted `plugin.json` through Photopea's plugin window.
+GitHub Pages serves the installer in a normal browser tab and the full plugin panel when the same URL is loaded inside Photopea. The downloadable production manifest is `uv-warp-photopea.json`.
 
 ## Implementation notes
 
