@@ -385,8 +385,12 @@ export function scanSavedWarps() {
   postPhotopeaScript(script);
 }
 
-export function createOutputLayerScript({
-  dataUrl,
+/**
+ * Finalize Create output after the warped PNG was opened as a new document
+ * via postMessage(ArrayBuffer). Embedding a multi-megabyte data URL inside a
+ * single script hangs Photopea; binary open + a small follow-up script is reliable.
+ */
+export function createOutputFinalizeScript({
   sourceLayerId,
   sourceLayerName,
   originalLayerName,
@@ -396,9 +400,10 @@ export function createOutputLayerScript({
   resultName,
   previousResultName = "",
   dataLayerName,
+  sourceDocumentName,
+  sourceDocumentSource,
 }) {
   const payload = JSON.stringify({
-    dataUrl,
     sourceLayerId,
     sourceLayerName,
     originalLayerName,
@@ -408,6 +413,8 @@ export function createOutputLayerScript({
     resultName,
     previousResultName: previousResultName || "",
     dataLayerName,
+    sourceDocumentName: sourceDocumentName || "",
+    sourceDocumentSource: sourceDocumentSource || "",
   });
 
   return `
@@ -415,31 +422,100 @@ export function createOutputLayerScript({
   ${commonScriptHelpers()}
   var dataPrefix = ${JSON.stringify(DATA_PREFIX)};
   var data = ${payload};
+  function documentSource(documentRef) {
+    try { return String(documentRef.source || ""); } catch (_) { return ""; }
+  }
+  function findSourceDocument(placedDocument) {
+    if (!app.documents) return null;
+    if (data.sourceDocumentSource) {
+      for (var i = 0; i < app.documents.length; i += 1) {
+        var bySource = app.documents[i];
+        if (bySource !== placedDocument && documentSource(bySource) === data.sourceDocumentSource) {
+          return bySource;
+        }
+      }
+    }
+    if (data.sourceDocumentName) {
+      for (var j = 0; j < app.documents.length; j += 1) {
+        var byName = app.documents[j];
+        if (byName !== placedDocument && String(byName.name || "") === data.sourceDocumentName) {
+          return byName;
+        }
+      }
+    }
+    return null;
+  }
+  function transferPlacedLayer(placedDocument, sourceDocument) {
+    app.activeDocument = placedDocument;
+    var placedLayer = placedDocument.activeLayer;
+    if (!placedLayer && placedDocument.artLayers && placedDocument.artLayers.length) {
+      placedLayer = placedDocument.artLayers[0];
+    }
+    if (!placedLayer) throw new Error("The rendered output document has no layer to transfer.");
+    var resultLayer = null;
+    try {
+      resultLayer = placedLayer.duplicate(sourceDocument, ElementPlacement.PLACEATBEGINNING);
+    } catch (_) {
+      resultLayer = null;
+    }
+    if (!resultLayer) {
+      try {
+        placedDocument.selection.selectAll();
+        placedDocument.selection.copy();
+      } catch (copyError) {
+        throw new Error(copyError && copyError.message ? copyError.message : "Could not copy the rendered output.");
+      }
+      placedDocument.close(SaveOptions.DONOTSAVECHANGES);
+      app.activeDocument = sourceDocument;
+      sourceDocument.paste();
+      return sourceDocument.activeLayer;
+    }
+    placedDocument.close(SaveOptions.DONOTSAVECHANGES);
+    app.activeDocument = sourceDocument;
+    return resultLayer;
+  }
   try {
-    if (!app.documents.length) throw new Error("The source document is no longer open.");
-    var documentRef = app.activeDocument;
-    var sourceLayer = findLayerById(documentRef, data.sourceLayerId);
-    if (!sourceLayer) sourceLayer = findLayerByName(documentRef, data.sourceLayerName);
+    if (app.documents.length < 2) {
+      throw new Error("Photopea did not open the rendered PNG as a new document.");
+    }
+    var placedDocument = app.activeDocument;
+    var sourceDocument = findSourceDocument(placedDocument);
+    if (!sourceDocument) {
+      sourceDocument = placedDocument;
+      placedDocument = null;
+      for (var d = 0; d < app.documents.length; d += 1) {
+        var candidate = app.documents[d];
+        if (candidate === sourceDocument) continue;
+        if (data.sourceDocumentSource && documentSource(candidate) === data.sourceDocumentSource) continue;
+        if (data.sourceDocumentName && String(candidate.name || "") === data.sourceDocumentName) continue;
+        placedDocument = candidate;
+        break;
+      }
+    }
+    if (!placedDocument || placedDocument === sourceDocument) {
+      throw new Error("Photopea did not open the rendered PNG as a new document.");
+    }
+
+    var sourceLayer = findLayerById(sourceDocument, data.sourceLayerId);
+    if (!sourceLayer) sourceLayer = findLayerByName(sourceDocument, data.sourceLayerName);
     if (!sourceLayer && data.originalLayerName) {
-      sourceLayer = findLayerByName(documentRef, data.originalLayerName);
+      sourceLayer = findLayerByName(sourceDocument, data.originalLayerName);
     }
     if (!sourceLayer) throw new Error("The original source layer could not be found.");
+
+    var resultLayer = transferPlacedLayer(placedDocument, sourceDocument);
+    if (!resultLayer || resultLayer === sourceLayer) {
+      throw new Error("Photopea did not insert the rendered output.");
+    }
 
     // Keep the layer's pixels untouched; only append [Original] to its name.
     if (data.originalLayerName && sourceLayer.name !== data.originalLayerName) {
       try { sourceLayer.name = data.originalLayerName; } catch (_) {}
     }
 
-    documentRef.activeLayer = sourceLayer;
-    app.open(data.dataUrl, null, true);
-    var resultLayer = documentRef.activeLayer;
-    if (!resultLayer || resultLayer === sourceLayer) {
-      throw new Error("Photopea did not insert the rendered output.");
-    }
-
-    var group = findLayerSetByName(documentRef, data.groupName);
+    var group = findLayerSetByName(sourceDocument, data.groupName);
     if (!group) {
-      group = documentRef.layerSets.add();
+      group = sourceDocument.layerSets.add();
       group.name = data.groupName;
     }
 
@@ -456,7 +532,7 @@ export function createOutputLayerScript({
 
     var dataLayer = findLayerByName(group, data.dataLayerName);
     if (!dataLayer) {
-      dataLayer = documentRef.artLayers.add();
+      dataLayer = sourceDocument.artLayers.add();
       dataLayer.kind = LayerKind.TEXT;
       dataLayer.name = data.dataLayerName;
       dataLayer.move(group, ElementPlacement.INSIDE);
@@ -466,7 +542,7 @@ export function createOutputLayerScript({
 
     sourceLayer.visible = false;
     group.visible = true;
-    documentRef.activeLayer = resultLayer;
+    sourceDocument.activeLayer = resultLayer;
     echo("output-result", {
       ok: true,
       projectId: data.projectId,
@@ -481,6 +557,11 @@ export function createOutputLayerScript({
     });
   }
 }());`;
+}
+
+/** @deprecated Prefer createOutputFinalizeScript after posting the PNG as an ArrayBuffer. */
+export function createOutputLayerScript(options) {
+  return createOutputFinalizeScript(options);
 }
 
 export function toggleSavedOutput({ groupName, sourceLayerId, sourceLayerName, originalLayerName = "" }) {

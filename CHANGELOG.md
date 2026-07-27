@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.6] - 2026-07-28
+
+### Fixed
+
+- **Create output** no longer hangs on “Sending output to Photopea…”. The warped PNG is sent as a binary file, then a small follow-up script adds the `[Original]` / `[Warped]` layers. Embedding a multi-megabyte data URL in one script was stalling Photopea (worse after v0.3.3’s larger saved state).
+
 ## [0.3.5] - 2026-07-27
 
 ### Fixed

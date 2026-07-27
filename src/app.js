@@ -1,6 +1,6 @@
 import { clonePoints, validateProjectMesh } from "./mesh.js";
 import {
-  createOutputLayerScript,
+  createOutputFinalizeScript,
   isEmbeddedInPhotopea,
   makeCloseTemporaryScript,
   makePrepareCapturePngScript,
@@ -118,6 +118,7 @@ const state = {
   panDrag: null,
   panReady: false,
   drag: null,
+  outputSession: null,
   outputTimeoutId: null,
   undo: [],
   redo: [],
@@ -1567,35 +1568,46 @@ function canvasToBlob(canvas) {
   return new Promise((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The browser could not encode the warped image.")), "image/png"));
 }
 
-function blobToDataUrl(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("The rendered PNG could not be prepared for Photopea."));
-    reader.readAsDataURL(blob);
-  });
-}
-
 function clearOutputTimeout() {
   if (!state.outputTimeoutId) return;
   clearTimeout(state.outputTimeoutId);
   state.outputTimeoutId = null;
 }
 
+function failOutput(message) {
+  clearOutputTimeout();
+  state.outputSession = null;
+  setBusy(false);
+  setStatus("error", "Could not create output", message);
+}
+
 /** Photopea can swallow a script silently, so never leave the panel spinning. */
-function armOutputTimeout() {
+function armOutputTimeout(stageMessage) {
   clearOutputTimeout();
   state.outputTimeoutId = setTimeout(() => {
     state.outputTimeoutId = null;
+    state.outputSession = null;
     setBusy(false);
     setStatus("error", "Photopea did not confirm the output",
-      "The original workfile was not changed. Check the Photopea tab for a partial UV Warp group, then try Create output again.");
+      stageMessage || "The original workfile should be unchanged. Close any extra PNG tab Photopea opened, then try Create output again.");
   }, OUTPUT_TIMEOUT_MS);
+}
+
+function beginOutputFinalize() {
+  const session = state.outputSession;
+  if (!session || session.stage !== "placing") return;
+  session.stage = "finalizing";
+  armOutputTimeout("Photopea opened the rendered PNG but did not finish adding it to the workfile.");
+  setStatus("info", "Adding output layers…", "Renaming the source with [Original] and adding the [Warped] result.");
+  postPhotopeaScript(createOutputFinalizeScript(session.finalize));
 }
 
 async function createOutput() {
   if (!state.project || state.busy) return;
   try {
+    if (!isEmbeddedInPhotopea()) {
+      throw new Error("Create output requires the Photopea plugin panel.");
+    }
     const faces = state.project.mesh.quads;
     if (!faces.length || !faces.some((face) => face.length >= 3)) {
       throw new Error("Create at least one triangle or quad face with Draw before creating output.");
@@ -1617,6 +1629,10 @@ async function createOutput() {
     canvas.height = height;
     drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, { seamOverlap: 0.7 });
     const previousResultName = state.project.output?.resultName || "";
+    // Keep the live Photopea layer name for lookup; serializeProject renames it locally to [Original].
+    const liveSourceName = stripWarpTags(
+      state.captureMeta?.layerName || state.project.source.layerName || "",
+    );
     const project = serializeProject();
     const stateBase64 = encodeBase64Utf8(JSON.stringify(project));
     if (stateBase64.length > MAX_STATE_BYTES) {
@@ -1625,25 +1641,28 @@ async function createOutput() {
     state.project = project;
     if (state.captureMeta) state.captureMeta.layerName = project.output.originalName;
     updateSourceSummary();
-    const dataUrl = await blobToDataUrl(await canvasToBlob(canvas));
-    armOutputTimeout();
-    postPhotopeaScript(createOutputLayerScript({
-      dataUrl,
-      sourceLayerId: project.source.layerId,
-      sourceLayerName: project.source.layerName,
-      originalLayerName: project.output.originalName,
-      projectId: project.projectId,
-      stateBase64,
-      groupName: project.output.groupName,
-      resultName: project.output.resultName,
-      previousResultName,
-      dataLayerName: project.output.dataLayerName,
-    }));
-    setStatus("info", "Sending output to Photopea…", "Renaming the source with [Original] and adding the [Warped] result.");
+    const buffer = await (await canvasToBlob(canvas)).arrayBuffer();
+    state.outputSession = {
+      stage: "placing",
+      finalize: {
+        sourceLayerId: project.source.layerId,
+        sourceLayerName: liveSourceName,
+        originalLayerName: project.output.originalName,
+        projectId: project.projectId,
+        stateBase64,
+        groupName: project.output.groupName,
+        resultName: project.output.resultName,
+        previousResultName,
+        dataLayerName: project.output.dataLayerName,
+        sourceDocumentName: project.source.documentName || state.captureMeta?.documentName || "",
+        sourceDocumentSource: project.source.documentSource || state.captureMeta?.documentSource || "",
+      },
+    };
+    armOutputTimeout("Photopea did not open the rendered PNG. Try Create output again.");
+    setStatus("info", "Sending output to Photopea…", "Opening the warped image, then adding it to the workfile.");
+    postPhotopeaBinary(buffer);
   } catch (error) {
-    clearOutputTimeout();
-    setBusy(false);
-    setStatus("error", "Could not create output", error.message);
+    failOutput(error.message);
   }
 }
 
@@ -1708,7 +1727,8 @@ function refreshPhotopeaState() {
 async function handlePhotopeaResponse(event) {
   if (event.source !== window.parent) return;
   if (event.data === "done") {
-    handleCaptureDone();
+    if (state.outputSession?.stage === "placing") beginOutputFinalize();
+    else handleCaptureDone();
     return;
   }
   if (state.captureSession && !state.captureSession.finalizing) {
@@ -1756,6 +1776,7 @@ async function handlePhotopeaResponse(event) {
   }
   if (message.type === "output-result") {
     clearOutputTimeout();
+    state.outputSession = null;
     setBusy(false);
     if (message.ok) {
       if (message.originalLayerName) {

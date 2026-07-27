@@ -10,7 +10,7 @@ import {
   requestSelectedLayer,
   scanSavedWarps,
   toggleSavedOutput,
-  createOutputLayerScript,
+  createOutputFinalizeScript,
 } from "../src/photopea.js";
 
 function capturePostedScript(action) {
@@ -63,8 +63,7 @@ test("every Photopea bridge action emits syntactically valid JavaScript", () => 
         sourceLayerName: "Building",
       }),
     ),
-    createOutputLayerScript({
-      dataUrl: "data:image/png;base64,AA==",
+    createOutputFinalizeScript({
       sourceLayerId: 12,
       sourceLayerName: "Building",
       originalLayerName: "Building [Original]",
@@ -73,10 +72,33 @@ test("every Photopea bridge action emits syntactically valid JavaScript", () => 
       groupName: "UV Warp — Test",
       resultName: "Building [Warped]",
       dataLayerName: "Mesh Data — do not edit [test]",
+      sourceDocumentName: "Building.psd",
+      sourceDocumentSource: "local,Building.psd",
     }),
   ];
 
   scripts.forEach((script) => assert.doesNotThrow(() => new Function(script)));
+});
+
+test("output finalize script transfers a placed document without embedding a data URL", () => {
+  const script = createOutputFinalizeScript({
+    sourceLayerId: 12,
+    sourceLayerName: "Building",
+    originalLayerName: "Building [Original]",
+    projectId: "uvwp-test",
+    stateBase64: "e30=",
+    groupName: "UV Warp — Test",
+    resultName: "Building [Warped]",
+    dataLayerName: "Mesh Data — do not edit [test]",
+    sourceDocumentName: "Building.psd",
+    sourceDocumentSource: "local,Building.psd",
+  });
+  assert.doesNotMatch(script, /data:image\//);
+  assert.doesNotMatch(script, /app\.open\(/);
+  assert.match(script, /\.duplicate\(/);
+  assert.match(script, /\[Original\]/);
+  assert.match(script, /\[Warped\]/);
+  assert.match(script, /output-result/);
 });
 
 test("Photopea bridge messages decode only the UV Warp protocol", () => {
