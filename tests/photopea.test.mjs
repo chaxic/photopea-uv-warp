@@ -96,9 +96,12 @@ test("output finalize script transfers a placed document without embedding a dat
   assert.doesNotMatch(script, /data:image\//);
   assert.doesNotMatch(script, /app\.open\(/);
   assert.match(script, /\.duplicate\(/);
+  assert.match(script, /PLACEATBEGINNING/);
   assert.match(script, /\[Original\]/);
   assert.match(script, /\[Warped\]/);
   assert.match(script, /output-result/);
+  // Cross-document duplicate + move(INSIDE) hangs in Photopea; result must be duplicated into the group.
+  assert.doesNotMatch(script, /resultLayer\.move\(\s*group\s*,\s*ElementPlacement\.INSIDE\s*\)/);
 });
 
 test("Photopea bridge messages decode only the UV Warp protocol", () => {

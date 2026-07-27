@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.7] - 2026-07-28
+
+### Fixed
+
+- **Create output** no longer hangs after creating the UV Warp group. Photopea stalls on `Layer.move(..., INSIDE)` after a cross-document duplicate; the warped layer is now duplicated straight into the group instead.
+
 ## [0.3.6] - 2026-07-28
 
 ### Fixed

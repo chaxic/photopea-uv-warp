@@ -1784,8 +1784,13 @@ async function handlePhotopeaResponse(event) {
         if (state.captureMeta) state.captureMeta.layerName = message.originalLayerName;
         updateSourceSummary();
       }
-      setStatus("success", "Output created",
-        `Source is now “${state.project.output.originalName}”. Result is “${state.project.output.resultName}”. Mesh data stays hidden — do not edit or delete it.`);
+      if (message.dataSaved === false) {
+        setStatus("warning", "Output created without mesh data",
+          `“${state.project.output.resultName}” was added, but Photopea could not store the mesh text layer. You can use the result, but Edit later will not work for this warp.`);
+      } else {
+        setStatus("success", "Output created",
+          `Source is now “${state.project.output.originalName}”. Result is “${state.project.output.resultName}”. Mesh data stays hidden — do not edit or delete it.`);
+      }
       scanSavedWarps();
     } else setStatus("error", "Photopea could not add the output", message.message);
     return;

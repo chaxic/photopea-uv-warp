@@ -387,8 +387,12 @@ export function scanSavedWarps() {
 
 /**
  * Finalize Create output after the warped PNG was opened as a new document
- * via postMessage(ArrayBuffer). Embedding a multi-megabyte data URL inside a
- * single script hangs Photopea; binary open + a small follow-up script is reliable.
+ * via postMessage(ArrayBuffer).
+ *
+ * Photopea quirks this works around:
+ * - Embedding a multi-megabyte data URL in one script stalls the runtime.
+ * - Layer.move(..., INSIDE) after a cross-document duplicate often never returns.
+ *   Duplicating straight into the group avoids that move.
  */
 export function createOutputFinalizeScript({
   sourceLayerId,
@@ -422,63 +426,66 @@ export function createOutputFinalizeScript({
   ${commonScriptHelpers()}
   var dataPrefix = ${JSON.stringify(DATA_PREFIX)};
   var data = ${payload};
+  var placedDocument = null;
   function documentSource(documentRef) {
     try { return String(documentRef.source || ""); } catch (_) { return ""; }
   }
-  function findSourceDocument(placedDocument) {
+  function findSourceDocument(activePlaced) {
     if (!app.documents) return null;
     if (data.sourceDocumentSource) {
       for (var i = 0; i < app.documents.length; i += 1) {
         var bySource = app.documents[i];
-        if (bySource !== placedDocument && documentSource(bySource) === data.sourceDocumentSource) {
-          return bySource;
-        }
+        if (bySource !== activePlaced && documentSource(bySource) === data.sourceDocumentSource) return bySource;
       }
     }
     if (data.sourceDocumentName) {
       for (var j = 0; j < app.documents.length; j += 1) {
         var byName = app.documents[j];
-        if (byName !== placedDocument && String(byName.name || "") === data.sourceDocumentName) {
-          return byName;
-        }
+        if (byName !== activePlaced && String(byName.name || "") === data.sourceDocumentName) return byName;
       }
     }
     return null;
   }
-  function transferPlacedLayer(placedDocument, sourceDocument) {
-    app.activeDocument = placedDocument;
-    var placedLayer = placedDocument.activeLayer;
-    if (!placedLayer && placedDocument.artLayers && placedDocument.artLayers.length) {
-      placedLayer = placedDocument.artLayers[0];
-    }
-    if (!placedLayer) throw new Error("The rendered output document has no layer to transfer.");
-    var resultLayer = null;
-    try {
-      resultLayer = placedLayer.duplicate(sourceDocument, ElementPlacement.PLACEATBEGINNING);
-    } catch (_) {
-      resultLayer = null;
-    }
-    if (!resultLayer) {
-      try {
-        placedDocument.selection.selectAll();
-        placedDocument.selection.copy();
-      } catch (copyError) {
-        throw new Error(copyError && copyError.message ? copyError.message : "Could not copy the rendered output.");
+  function placedArtLayer(docRef) {
+    var layer = docRef.activeLayer;
+    if (layer && layer.typename === "ArtLayer") return layer;
+    if (docRef.artLayers && docRef.artLayers.length) return docRef.artLayers[0];
+    if (docRef.layers && docRef.layers.length) {
+      for (var i = 0; i < docRef.layers.length; i += 1) {
+        if (docRef.layers[i].typename === "ArtLayer") return docRef.layers[i];
       }
-      placedDocument.close(SaveOptions.DONOTSAVECHANGES);
-      app.activeDocument = sourceDocument;
-      sourceDocument.paste();
-      return sourceDocument.activeLayer;
     }
-    placedDocument.close(SaveOptions.DONOTSAVECHANGES);
-    app.activeDocument = sourceDocument;
-    return resultLayer;
+    return null;
+  }
+  function removeNamedLayer(container, wantedName) {
+    if (!wantedName) return;
+    var existing = findLayerByName(container, wantedName);
+    if (existing) {
+      try { existing.remove(); } catch (_) {}
+    }
+  }
+  function duplicateInto(target, layer) {
+    var copied = null;
+    // Prefer PLACEATBEGINNING — ElementPlacement.INSIDE after cross-doc duplicate hangs in Photopea.
+    try { copied = layer.duplicate(target, ElementPlacement.PLACEATBEGINNING); } catch (_) { copied = null; }
+    if (!copied) {
+      try { copied = layer.duplicate(target, ElementPlacement.INSIDE); } catch (_) { copied = null; }
+    }
+    if (!copied) {
+      try { copied = layer.duplicate(target); } catch (_) { copied = null; }
+    }
+    return copied;
+  }
+  function closePlaced() {
+    if (!placedDocument) return;
+    try { placedDocument.close(SaveOptions.DONOTSAVECHANGES); } catch (_) {}
+    placedDocument = null;
   }
   try {
     if (app.documents.length < 2) {
       throw new Error("Photopea did not open the rendered PNG as a new document.");
     }
-    var placedDocument = app.activeDocument;
+    placedDocument = app.activeDocument;
     var sourceDocument = findSourceDocument(placedDocument);
     if (!sourceDocument) {
       sourceDocument = placedDocument;
@@ -496,6 +503,7 @@ export function createOutputFinalizeScript({
       throw new Error("Photopea did not open the rendered PNG as a new document.");
     }
 
+    app.activeDocument = sourceDocument;
     var sourceLayer = findLayerById(sourceDocument, data.sourceLayerId);
     if (!sourceLayer) sourceLayer = findLayerByName(sourceDocument, data.sourceLayerName);
     if (!sourceLayer && data.originalLayerName) {
@@ -503,12 +511,7 @@ export function createOutputFinalizeScript({
     }
     if (!sourceLayer) throw new Error("The original source layer could not be found.");
 
-    var resultLayer = transferPlacedLayer(placedDocument, sourceDocument);
-    if (!resultLayer || resultLayer === sourceLayer) {
-      throw new Error("Photopea did not insert the rendered output.");
-    }
-
-    // Keep the layer's pixels untouched; only append [Original] to its name.
+    // Keep pixels untouched; only append [Original] to the name.
     if (data.originalLayerName && sourceLayer.name !== data.originalLayerName) {
       try { sourceLayer.name = data.originalLayerName; } catch (_) {}
     }
@@ -519,38 +522,83 @@ export function createOutputFinalizeScript({
       group.name = data.groupName;
     }
 
-    var previousNames = [data.resultName];
-    if (data.previousResultName) previousNames.push(data.previousResultName);
-    for (var p = 0; p < previousNames.length; p += 1) {
-      var previousResult = findLayerByName(group, previousNames[p]);
-      if (previousResult && previousResult !== resultLayer) previousResult.remove();
+    removeNamedLayer(group, data.resultName);
+    if (data.previousResultName && data.previousResultName !== data.resultName) {
+      removeNamedLayer(group, data.previousResultName);
     }
 
-    resultLayer.name = data.resultName;
-    resultLayer.move(group, ElementPlacement.INSIDE);
+    app.activeDocument = placedDocument;
+    var placedLayer = placedArtLayer(placedDocument);
+    if (!placedLayer) throw new Error("The rendered output document has no layer to transfer.");
+
+    // Duplicate straight into the group. Do NOT call Layer.move(..., INSIDE) afterward —
+    // that call hangs in Photopea after a cross-document duplicate.
+    var resultLayer = duplicateInto(group, placedLayer);
+    if (!resultLayer) {
+      try {
+        placedDocument.selection.selectAll();
+        placedDocument.selection.copy();
+      } catch (copyError) {
+        throw new Error(copyError && copyError.message ? copyError.message : "Could not copy the rendered output.");
+      }
+      closePlaced();
+      app.activeDocument = sourceDocument;
+      sourceDocument.paste();
+      var pasted = sourceDocument.activeLayer;
+      if (!pasted) throw new Error("Photopea did not paste the rendered output.");
+      resultLayer = duplicateInto(group, pasted);
+      if (resultLayer && resultLayer !== pasted) {
+        try { pasted.remove(); } catch (_) {}
+      } else {
+        resultLayer = pasted;
+      }
+    } else {
+      closePlaced();
+      app.activeDocument = sourceDocument;
+    }
+
+    if (!resultLayer || resultLayer === sourceLayer) {
+      throw new Error("Photopea did not insert the rendered output.");
+    }
+
+    try { resultLayer.name = data.resultName; } catch (_) {}
     resultLayer.visible = true;
 
     var dataLayer = findLayerByName(group, data.dataLayerName);
     if (!dataLayer) {
       dataLayer = sourceDocument.artLayers.add();
-      dataLayer.kind = LayerKind.TEXT;
+      try { dataLayer.kind = LayerKind.TEXT; } catch (_) {}
       dataLayer.name = data.dataLayerName;
-      dataLayer.move(group, ElementPlacement.INSIDE);
+      var nested = duplicateInto(group, dataLayer);
+      if (nested && nested !== dataLayer) {
+        try { dataLayer.remove(); } catch (_) {}
+        dataLayer = nested;
+        try { dataLayer.name = data.dataLayerName; } catch (_) {}
+        try { dataLayer.kind = LayerKind.TEXT; } catch (_) {}
+      }
     }
-    dataLayer.textItem.contents = dataPrefix + data.stateBase64;
-    dataLayer.visible = false;
+    var dataSaved = true;
+    try {
+      dataLayer.textItem.contents = dataPrefix + data.stateBase64;
+      dataLayer.visible = false;
+    } catch (_) {
+      dataSaved = false;
+      try { dataLayer.visible = false; } catch (_hide) {}
+    }
 
     sourceLayer.visible = false;
     group.visible = true;
-    sourceDocument.activeLayer = resultLayer;
+    try { sourceDocument.activeLayer = resultLayer; } catch (_) {}
     echo("output-result", {
       ok: true,
+      dataSaved: dataSaved,
       projectId: data.projectId,
       groupName: data.groupName,
       resultName: data.resultName,
       originalLayerName: data.originalLayerName || sourceLayer.name
     });
   } catch (error) {
+    closePlaced();
     echo("output-result", {
       ok: false,
       message: error && error.message ? error.message : String(error)

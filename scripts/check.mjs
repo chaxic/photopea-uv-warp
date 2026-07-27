@@ -71,7 +71,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.3.6"',
+  'src="./?preview=1&v=0.3.7"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
