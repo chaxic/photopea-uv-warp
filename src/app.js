@@ -73,6 +73,7 @@ const elements = {
   referenceOpacityValue: document.querySelector("#reference-opacity-value"),
   referenceTintToggle: document.querySelector("#reference-tint-toggle"),
   referenceTintColor: document.querySelector("#reference-tint-color"),
+  backgroundColor: document.querySelector("#background-color"),
   resetLayout: document.querySelector("#reset-layout"),
   resetWarp: document.querySelector("#reset-warp"),
   createOutput: document.querySelector("#create-output"),
@@ -96,6 +97,8 @@ const state = {
   captureMeta: null,
   sourceImage: null,
   backdropImage: null,
+  referenceMeta: null,
+  pendingReferenceRestore: null,
   captureSession: null,
   pendingSavedProject: null,
   savedProjects: [],
@@ -162,6 +165,7 @@ function setProjectReady(ready) {
     elements.toolPen, elements.toolSelect,
     elements.insertMode, elements.deleteSelection, elements.sourceOpacity,
     elements.referenceOpacity, elements.referenceTintToggle, elements.referenceTintColor,
+    elements.backgroundColor,
     elements.resetLayout, elements.resetWarp, elements.createOutput,
     elements.clearSource, elements.captureReference, elements.loadReference,
   ]) {
@@ -188,6 +192,7 @@ function setReferenceSummary(name, meta) {
 function clearReference() {
   if (state.busy || !state.backdropImage) return;
   state.backdropImage = null;
+  state.referenceMeta = null;
   setReferenceSummary("No reference loaded", "Select another layer and capture it, or load an image.");
   setStatus("info", "Reference cleared", "The source and its mesh were kept.");
   scheduleRender();
@@ -199,6 +204,8 @@ function clearSource() {
   state.captureMeta = null;
   state.sourceImage = null;
   state.backdropImage = null;
+  state.referenceMeta = null;
+  state.pendingReferenceRestore = null;
   state.pendingSavedProject = null;
   state.undo = [];
   state.redo = [];
@@ -633,12 +640,13 @@ function render() {
   state.renderFrame = 0;
   const metrics = viewportMetrics();
   const context = elements.canvas.getContext("2d");
+  const background = elements.backgroundColor.value || "#0d0f12";
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, metrics.width, metrics.height);
-  context.fillStyle = "#111318";
+  context.fillStyle = background;
   context.fillRect(0, 0, metrics.width, metrics.height);
   if (!state.project || !state.sourceImage) return;
-  context.fillStyle = "#0d0f12";
+  context.fillStyle = background;
   context.fillRect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
   drawReferenceLayer(context, metrics);
   if (state.mode === "layout" || !state.preview) {
@@ -959,10 +967,11 @@ function readReferenceFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
+      const dataUrl = reader.result;
       const image = new Image();
-      image.onload = () => resolve(image);
+      image.onload = () => resolve({ image, dataUrl });
       image.onerror = () => reject(new Error("The selected reference image could not be decoded."));
-      image.src = reader.result;
+      image.src = dataUrl;
     };
     reader.onerror = () => reject(new Error("The selected reference image could not be read."));
     reader.readAsDataURL(file);
@@ -983,13 +992,53 @@ function safeLayerLabel(value) {
   return String(value || "Layer").replace(/[\r\n[\]]+/g, " ").trim().slice(0, 48);
 }
 
-function makeOutputNames(layerName, projectId) {
+function stripWarpTags(name) {
+  return String(name || "Layer")
+    .replace(/\s*\[Original\]\s*$/i, "")
+    .replace(/\s*\[Warped\]\s*$/i, "")
+    .trim();
+}
+
+function makeOutputNames(layerName, projectId, existingOutput = null) {
   const shortId = String(projectId || "").replace(/^uvwp-/, "").slice(-8) || "warp";
-  const label = safeLayerLabel(layerName);
+  const base = safeLayerLabel(stripWarpTags(layerName));
   return {
-    groupName: `UV Warp · ${label} [UVWP:${shortId}]`,
-    resultName: `Warped Output [${shortId}]`,
-    dataLayerName: `Mesh Data — do not edit [${shortId}]`,
+    baseName: base,
+    originalName: `${base} [Original]`,
+    resultName: `${base} [Warped]`,
+    // Keep a stable group / data-layer identity across re-exports when possible.
+    groupName: existingOutput?.groupName || `UV Warp · ${base} [UVWP:${shortId}]`,
+    dataLayerName: existingOutput?.dataLayerName || `Mesh Data — do not edit [${shortId}]`,
+  };
+}
+
+function imageToDataUrl(image, { maxEdge = 2200, type = "image/jpeg", quality = 0.82 } = {}) {
+  const scale = Math.min(1, maxEdge / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL(type, quality);
+}
+
+function buildReferencePayload() {
+  if (!state.backdropImage || !state.referenceMeta) return null;
+  const imageDataUrl = state.referenceMeta.imageDataUrl
+    || imageToDataUrl(state.backdropImage);
+  if (state.referenceMeta.kind === "layer") {
+    return {
+      kind: "layer",
+      layerId: state.referenceMeta.layerId,
+      layerName: state.referenceMeta.layerName,
+      imageDataUrl,
+    };
+  }
+  return {
+    kind: "image",
+    fileName: state.referenceMeta.fileName || "reference.png",
+    imageDataUrl,
   };
 }
 
@@ -1001,11 +1050,13 @@ function projectFromCapture() {
     source: { ...state.captureMeta },
     mesh: seedQuadMesh(normalizedSourceBounds()),
     output: makeOutputNames(state.captureMeta.layerName, projectId),
+    reference: null,
     view: {
       sourceOpacity: Number(elements.sourceOpacity.value),
       referenceOpacity: Number(elements.referenceOpacity.value),
       referenceTint: state.referenceTint,
       referenceTintColor: elements.referenceTintColor.value || "#ff4d6d",
+      backgroundColor: elements.backgroundColor.value || "#0d0f12",
       insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
@@ -1020,6 +1071,9 @@ function normalizeLoadedProject(project) {
   const tintColor = /^#[0-9a-fA-F]{6}$/.test(project.view?.referenceTintColor)
     ? project.view.referenceTintColor
     : "#ff4d6d";
+  const backgroundColor = /^#[0-9a-fA-F]{6}$/.test(project.view?.backgroundColor)
+    ? project.view.backgroundColor
+    : "#0d0f12";
   return {
     ...project,
     schemaVersion: 2,
@@ -1031,11 +1085,13 @@ function normalizeLoadedProject(project) {
       sourceVertices: clonePoints(project.mesh.sourceVertices),
       warpVertices: clonePoints(project.mesh.warpVertices),
     },
+    reference: project.reference && typeof project.reference === "object" ? { ...project.reference } : null,
     view: {
       sourceOpacity: clamp(Number(project.view?.sourceOpacity) || 100, 0, 100),
       referenceOpacity: clamp(Number(project.view?.referenceOpacity) || 65, 0, 100),
       referenceTint: Boolean(project.view?.referenceTint),
       referenceTintColor: tintColor,
+      backgroundColor,
       insertMode: project.view?.insertMode || "tri-quad",
     },
   };
@@ -1069,12 +1125,19 @@ function armCaptureTimeout(message) {
 
 function failCapture(message) {
   const session = state.captureSession;
+  const fallback = state.pendingReferenceRestore;
   clearCaptureTimeout(session);
   if (session) session.finalizing = true;
   state.captureSession = null;
   state.pendingSavedProject = null;
   setBusy(false);
   setProjectReady(Boolean(state.project));
+  if (session?.mode === "reference" && fallback?.imageDataUrl) {
+    state.pendingReferenceRestore = null;
+    restoreSavedReference(fallback);
+    return;
+  }
+  state.pendingReferenceRestore = null;
   setStatus("error", "Capture failed", message);
 }
 
@@ -1137,17 +1200,23 @@ function maybeCloseTemporaryCapture() {
 async function finishSourceCapture(session) {
   state.captureMeta = session.sourceMeta;
   state.sourceImage = await imageFromBuffer(session.current.buffer);
+  let restoreReference = null;
   if (state.pendingSavedProject) {
     state.project = normalizeLoadedProject(state.pendingSavedProject);
+    restoreReference = state.project.reference;
     state.pendingSavedProject = null;
     elements.sourceOpacity.value = String(state.project.view.sourceOpacity);
     elements.referenceOpacity.value = String(state.project.view.referenceOpacity);
     elements.referenceTintColor.value = state.project.view.referenceTintColor || "#ff4d6d";
+    elements.backgroundColor.value = state.project.view.backgroundColor || "#0d0f12";
     state.referenceTint = Boolean(state.project.view.referenceTint);
     elements.insertMode.value = state.project.view.insertMode;
     state.insertMode = elements.insertMode.value;
     setMode("warp");
-    setStatus("success", "Saved warp loaded", "The saved mesh is editable again. Add a reference when you are ready to align it.");
+    setStatus("success", "Saved warp loaded",
+      restoreReference
+        ? "Source loaded. Restoring the saved reference…"
+        : "The saved mesh is editable again. Add a reference when you are ready to align it.");
   } else {
     state.project = projectFromCapture();
     setMode("layout");
@@ -1161,26 +1230,86 @@ async function finishSourceCapture(session) {
   updateSourceSummary();
   elements.sourceOpacityValue.textContent = `${elements.sourceOpacity.value}%`;
   elements.referenceOpacityValue.textContent = `${elements.referenceOpacity.value}%`;
+  syncReferenceTintControls();
   setBusy(false);
   setProjectReady(true);
   scheduleRender();
+  if (restoreReference) {
+    queueMicrotask(() => restoreSavedReference(restoreReference));
+  }
 }
 
 async function finishReferenceCapture(session) {
   state.backdropImage = await imageFromBuffer(session.current.buffer);
   const sameLayer = session.sourceMeta.layerId === state.captureMeta?.layerId;
+  state.referenceMeta = {
+    kind: "layer",
+    layerId: session.sourceMeta.layerId,
+    layerName: session.sourceMeta.layerName,
+    imageDataUrl: imageToDataUrl(state.backdropImage),
+  };
   setReferenceSummary(
     session.sourceMeta.layerName,
     `${Math.round(session.sourceMeta.documentWidth)} × ${Math.round(session.sourceMeta.documentHeight)} px · captured layer`,
   );
   setBusy(false);
   setProjectReady(true);
+  state.pendingReferenceRestore = null;
+  const restored = Boolean(session.restoring);
   setStatus(sameLayer ? "warning" : "success",
-    sameLayer ? "Reference matches the source" : "Reference captured",
+    sameLayer ? "Reference matches the source" : restored ? "Reference restored" : "Reference captured",
     sameLayer
       ? "The same layer was selected for both. Select a different layer in Photopea and capture again."
-      : "Only that layer was captured. The source mesh was preserved and can be aligned in Warp.");
+      : restored
+        ? "Source and reference are ready. Adjust the mesh, then Create output to update."
+        : "Only that layer was captured. The source mesh was preserved and can be aligned in Warp.");
   scheduleRender();
+}
+
+function imageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("The saved reference image could not be decoded."));
+    image.src = dataUrl;
+  });
+}
+
+async function restoreSavedReference(reference) {
+  if (!reference || state.busy || !state.project) return;
+  if (reference.kind === "layer" && reference.layerId != null) {
+    beginReferenceCapture({
+      layerId: reference.layerId,
+      layerName: reference.layerName,
+      restoring: true,
+      fallback: reference.imageDataUrl ? { ...reference, kind: "image" } : null,
+    });
+    return;
+  }
+  if (reference.imageDataUrl) {
+    try {
+      setBusy(true);
+      state.backdropImage = await imageFromDataUrl(reference.imageDataUrl);
+      state.referenceMeta = {
+        kind: reference.kind === "layer" ? "layer" : "image",
+        layerId: reference.layerId,
+        layerName: reference.layerName,
+        fileName: reference.fileName || reference.layerName || "Saved reference",
+        imageDataUrl: reference.imageDataUrl,
+      };
+      setReferenceSummary(
+        state.referenceMeta.fileName || state.referenceMeta.layerName || "Saved reference",
+        `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px · restored`,
+      );
+      setStatus("success", "Reference restored", "Source and reference are ready. Adjust the mesh, then Create output to update.");
+    } catch (error) {
+      setStatus("warning", "Source loaded without reference", error.message);
+    } finally {
+      setBusy(false);
+      setProjectReady(true);
+      scheduleRender();
+    }
+  }
 }
 
 function maybeFinishTemporaryCapture() {
@@ -1266,36 +1395,56 @@ function beginSourceCapture(savedProject = null) {
   readCaptureMeta({ sourceLayerId: savedProject?.source?.layerId ?? null, requestId });
 }
 
-function beginReferenceCapture() {
+function beginReferenceCapture({ layerId = null, layerName = "", restoring = false, fallback = null } = {}) {
   if (!state.project || !state.captureMeta || state.busy) return;
   if (!isEmbeddedInPhotopea()) {
     setStatus("error", "Open inside Photopea", "Reference capture requires the Photopea plugin panel.");
     return;
   }
   const requestId = Date.now();
+  state.pendingReferenceRestore = fallback;
   state.captureSession = {
     token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
     requestId, mode: "reference", captureMode: "source", stage: "reading-meta", finalizing: false, timeoutId: null,
     sourceMeta: null, snapshotBuffer: null, snapshotDone: false, current: null,
     hideGroupName: "",
+    restoring,
   };
   setBusy(true);
-  setStatus("info", "Capturing reference…", "Reading the layer selected in Photopea without changing the original workfile.");
+  setStatus("info", restoring ? "Restoring reference…" : "Capturing reference…",
+    layerId == null
+      ? "Reading the layer selected in Photopea without changing the original workfile."
+      : `Reading “${layerName || "saved reference layer"}” without changing the original workfile.`);
   armCaptureTimeout("Photopea did not respond while preparing the reference capture.");
-  readCaptureMeta({ sourceLayerId: null, requestId });
+  readCaptureMeta({ sourceLayerId: layerId, requestId });
 }
 
 function serializeProject() {
+  const names = makeOutputNames(
+    state.captureMeta?.layerName || state.project.source.layerName,
+    state.project.projectId,
+    state.project.output,
+  );
   const project = {
     ...state.project,
     schemaVersion: 2,
-    source: { ...state.project.source, ...state.captureMeta },
+    source: {
+      ...state.project.source,
+      ...state.captureMeta,
+      layerName: names.originalName,
+    },
     mesh: snapshotMesh(),
+    output: {
+      ...state.project.output,
+      ...names,
+    },
+    reference: buildReferencePayload(),
     view: {
       sourceOpacity: Number(elements.sourceOpacity.value),
       referenceOpacity: Number(elements.referenceOpacity.value),
       referenceTint: state.referenceTint,
       referenceTintColor: elements.referenceTintColor.value || "#ff4d6d",
+      backgroundColor: elements.backgroundColor.value || "#0d0f12",
       insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
@@ -1340,15 +1489,25 @@ async function createOutput() {
     canvas.width = width;
     canvas.height = height;
     drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, { seamOverlap: 0.7 });
+    const previousResultName = state.project.output?.resultName || "";
     const project = serializeProject();
     state.project = project;
+    if (state.captureMeta) state.captureMeta.layerName = project.output.originalName;
+    updateSourceSummary();
     const dataUrl = await blobToDataUrl(await canvasToBlob(canvas));
     postPhotopeaScript(createOutputLayerScript({
-      dataUrl, sourceLayerId: project.source.layerId, sourceLayerName: project.source.layerName,
-      projectId: project.projectId, stateBase64: encodeBase64Utf8(JSON.stringify(project)),
-      groupName: project.output.groupName, resultName: project.output.resultName, dataLayerName: project.output.dataLayerName,
+      dataUrl,
+      sourceLayerId: project.source.layerId,
+      sourceLayerName: project.source.layerName,
+      originalLayerName: project.output.originalName,
+      projectId: project.projectId,
+      stateBase64: encodeBase64Utf8(JSON.stringify(project)),
+      groupName: project.output.groupName,
+      resultName: project.output.resultName,
+      previousResultName,
+      dataLayerName: project.output.dataLayerName,
     }));
-    setStatus("info", "Sending output to Photopea…", "The warped PNG and editable mesh data are being added to the PSD.");
+    setStatus("info", "Sending output to Photopea…", "Renaming the source with [Original] and adding the [Warped] result.");
   } catch (error) {
     setBusy(false);
     setStatus("error", "Could not create output", error.message);
@@ -1374,7 +1533,7 @@ function updateSavedProjects() {
   elements.savedProjects.replaceChildren(...state.savedProjects.map((project) => {
     const option = document.createElement("option");
     option.value = project.projectId;
-    option.textContent = `${project.source.layerName} · ${project.mesh.quads.length} face${project.mesh.quads.length === 1 ? "" : "s"}`;
+    option.textContent = `${stripWarpTags(project.source.layerName)} · ${project.mesh.quads.length} face${project.mesh.quads.length === 1 ? "" : "s"}`;
     return option;
   }));
   elements.savedBar.classList.toggle("is-hidden", !state.savedProjects.length);
@@ -1395,7 +1554,10 @@ function toggleSelectedOutput() {
   setBusy(true);
   setStatus("info", "Toggling result…", "Switching between the original source and warped output.");
   toggleSavedOutput({
-    groupName: project.output.groupName, sourceLayerId: project.source.layerId, sourceLayerName: project.source.layerName,
+    groupName: project.output.groupName,
+    sourceLayerId: project.source.layerId,
+    sourceLayerName: project.source.layerName,
+    originalLayerName: project.output.originalName || "",
   });
 }
 
@@ -1462,8 +1624,13 @@ async function handlePhotopeaResponse(event) {
   if (message.type === "output-result") {
     setBusy(false);
     if (message.ok) {
+      if (message.originalLayerName) {
+        if (state.project?.source) state.project.source.layerName = message.originalLayerName;
+        if (state.captureMeta) state.captureMeta.layerName = message.originalLayerName;
+        updateSourceSummary();
+      }
       setStatus("success", "Output created",
-        `Added “${state.project.output.resultName}”. Mesh data is hidden — do not edit or delete it if you want to reopen this warp later.`);
+        `Source is now “${state.project.output.originalName}”. Result is “${state.project.output.resultName}”. Mesh data stays hidden — do not edit or delete it.`);
       scanSavedWarps();
     } else setStatus("error", "Photopea could not add the output", message.message);
     return;
@@ -1477,7 +1644,7 @@ async function handlePhotopeaResponse(event) {
 
 elements.captureSource.addEventListener("click", () => beginSourceCapture());
 elements.clearSource.addEventListener("click", clearSource);
-elements.captureReference.addEventListener("click", beginReferenceCapture);
+elements.captureReference.addEventListener("click", () => beginReferenceCapture());
 elements.loadReference.addEventListener("click", () => elements.referenceFile.click());
 elements.clearReference.addEventListener("click", clearReference);
 elements.referenceFile.addEventListener("change", async () => {
@@ -1486,8 +1653,14 @@ elements.referenceFile.addEventListener("change", async () => {
   try {
     setBusy(true);
     setStatus("info", "Loading reference…", "Reading the selected image.");
-    state.backdropImage = await readReferenceFile(file);
-    setReferenceSummary(file.name, `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px image`);
+    const { image, dataUrl } = await readReferenceFile(file);
+    state.backdropImage = image;
+    state.referenceMeta = {
+      kind: "image",
+      fileName: file.name,
+      imageDataUrl: dataUrl,
+    };
+    setReferenceSummary(file.name, `${image.naturalWidth} × ${image.naturalHeight} px image`);
     setStatus("success", "Reference loaded", "The source mesh was preserved.");
   } catch (error) {
     setStatus("error", "Could not load reference", error.message);
@@ -1519,6 +1692,7 @@ elements.referenceTintToggle.addEventListener("click", () => {
   scheduleRender();
 });
 elements.referenceTintColor.addEventListener("input", () => scheduleRender());
+elements.backgroundColor.addEventListener("input", () => scheduleRender());
 elements.resetLayout.addEventListener("click", resetLayout);
 elements.resetWarp.addEventListener("click", resetWarp);
 elements.deleteSelection.addEventListener("click", deleteSelection);

@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.3.2" />
-    <link rel="stylesheet" href="./installer.css?v=0.3.2" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.3" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.3" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.3.2</span>
+            <span class="install-version">v0.3.3</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.3.2</strong>
+              <strong>v0.3.3</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.3.2"
+              src="./?preview=1&v=0.3.3"
               loading="eager"
             ></iframe>
           </div>
@@ -140,7 +140,7 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.3.2</span>
+        <span class="version">v0.3.3</span>
       </header>
 
       <section class="workspace-card" id="workspace-card">
@@ -309,6 +309,14 @@
                 </label>
               </div>
             </div>
+            <div class="tint-control">
+              <span>Background</span>
+              <div class="tint-row">
+                <label class="color-swatch is-always-on" for="background-color" title="Editor background colour behind the images">
+                  <input id="background-color" type="color" value="#0d0f12" />
+                </label>
+              </div>
+            </div>
           </div>
 
           <div class="action-row">
@@ -362,26 +370,27 @@
 
         <details class="instructions">
           <summary>Output layers &amp; editing later</summary>
-          <p>Create output adds this group to the PSD (names include a short id):</p>
-          <pre class="layer-tree">UV Warp · SourceName [UVWP:id]
-├─ Warped Output [id]     ← the visible result
-└─ Mesh Data — do not edit [id]  ← hidden plugin data</pre>
+          <p>Create output renames your source and adds a group like this:</p>
+          <pre class="layer-tree">building1-3 [Original]          ← your source (hidden, not modified)
+UV Warp · building1-3 [UVWP:id]
+├─ building1-3 [Warped]         ← the visible result
+└─ Mesh Data — do not edit [id] ← hidden plugin data</pre>
           <ul>
-            <li><strong>Warped Output</strong> — the warped image. Safe to show, hide, or move within the group.</li>
-            <li><strong>Mesh Data — do not edit</strong> — stores the mesh so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.</li>
+            <li><strong>… [Original]</strong> — your source layer with <code>[Original]</code> appended. Content is unchanged; only the name and visibility change. Use <strong>On / off</strong> to show it again.</li>
+            <li><strong>… [Warped]</strong> — the warped image. Safe to show, hide, or move within the group.</li>
+            <li><strong>Mesh Data — do not edit</strong> — stores the mesh (and reference info) so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.</li>
             <li><strong>UVWP:id</strong> in the group name — leave it alone. The plugin uses it to find this warp.</li>
-            <li>Your original source layer is only hidden, not changed. Use <strong>On / off</strong> to switch between the warped result and the original.</li>
           </ul>
-          <p><strong>To edit a finished warp:</strong> open this panel → pick the warp under <strong>Saved warp</strong> → <strong>Edit</strong> → adjust Layout/Warp → <strong>Create output</strong> again. That updates the Warped Output in place and keeps the original source untouched.</p>
+          <p><strong>To edit a finished warp:</strong> open this panel → pick the warp under <strong>Saved warp</strong> → <strong>Edit</strong>. The source and reference load automatically → adjust Layout/Warp → <strong>Create output</strong> again to update the Warped layer.</p>
         </details>
       </div>
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.3.2 · local processing · no login</span>
+        <span>v0.3.3 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.3.2"></script>
+    <script type="module" src="./installer.js?v=0.3.3"></script>
   </body>
 </html>

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.3] - 2026-07-27
+
+### Added
+
+- Editable **Background** colour for the editor canvas.
+- Saved warps store reference info so **Edit** reloads both the source and the reference automatically.
+
+### Changed
+
+- **Create output** appends `[Original]` to the source layer name (pixels unchanged) and names the result `{same name} [Warped]`.
+- Output instructions updated for the new naming and the Edit → restore flow.
+
 ## [0.3.2] - 2026-07-27
 
 ### Added

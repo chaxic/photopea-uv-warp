@@ -67,11 +67,12 @@ test("every Photopea bridge action emits syntactically valid JavaScript", () => 
       dataUrl: "data:image/png;base64,AA==",
       sourceLayerId: 12,
       sourceLayerName: "Building",
+      originalLayerName: "Building [Original]",
       projectId: "uvwp-test",
       stateBase64: "e30=",
       groupName: "UV Warp — Test",
-      resultName: "UV Warp Result [test]",
-      dataLayerName: "UV Warp Data [test]",
+      resultName: "Building [Warped]",
+      dataLayerName: "Mesh Data — do not edit [test]",
     }),
   ];
 

@@ -2,13 +2,13 @@
 
 UV Warp is a panel plugin that adds an editable, connected mesh warp workflow to Photopea. It renders the deformation inside the plugin instead of relying on Photopea's scripted Perspective Warp command.
 
-**Current version:** v0.3.2
+**Current version:** v0.3.3
 
-[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.2)
+[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.3)
 
 ## Install
 
-1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.2).
+1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.3).
 2. Download `uv-warp-photopea.json`.
 3. In Photopea, choose **Window → Plugins → Add Plugin**.
 4. Select the downloaded JSON file.
@@ -45,17 +45,18 @@ Use **Clear** under either bar to drop the captured source or reference without 
 ## Output layers
 
 ```text
-UV Warp · SourceName [UVWP:id]
-├─ Warped Output [id]              ← the visible result
-└─ Mesh Data — do not edit [id]    ← hidden plugin data
+building1-3 [Original]               ← your source (hidden; pixels unchanged)
+UV Warp · building1-3 [UVWP:id]
+├─ building1-3 [Warped]              ← the visible result
+└─ Mesh Data — do not edit [id]      ← hidden plugin data
 ```
 
-- **Warped Output** — the warped image. Safe to show, hide, or move within the group.
-- **Mesh Data — do not edit** — stores the mesh so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.
+- **… [Original]** — your source layer with `[Original]` appended. Content is unchanged; only the name and visibility change. Use **On / off** to show it again.
+- **… [Warped]** — the warped image. Safe to show, hide, or move within the group.
+- **Mesh Data — do not edit** — stores the mesh and reference info so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.
 - Leave the **`[UVWP:id]`** tag in the group name alone — the plugin uses it to find this warp.
-- Your original source layer is only hidden, not changed. Use **On / off** to switch between the warped result and the original.
 
-**To edit a finished warp:** open the panel → pick it under **Saved warp** → **Edit** → adjust Layout/Warp → **Create output** again. That updates the Warped Output in place.
+**To edit a finished warp:** open the panel → pick it under **Saved warp** → **Edit**. Source and reference load automatically → adjust Layout/Warp → **Create output** again to update the Warped layer.
 
 ## Features
 
@@ -67,6 +68,7 @@ UV Warp · SourceName [UVWP:id]
 - Undo and redo inside the editor
 - Independent source and reference opacity
 - Reference tint overlay with an editable color swatch
+- Editable editor background colour
 - Triangles overlay for warp diagnostics
 - Connection check that pulls faces apart to reveal unwelded points
 - Fullscreen mode for a larger canvas

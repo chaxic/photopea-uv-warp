@@ -389,20 +389,24 @@ export function createOutputLayerScript({
   dataUrl,
   sourceLayerId,
   sourceLayerName,
+  originalLayerName,
   projectId,
   stateBase64,
   groupName,
   resultName,
+  previousResultName = "",
   dataLayerName,
 }) {
   const payload = JSON.stringify({
     dataUrl,
     sourceLayerId,
     sourceLayerName,
+    originalLayerName,
     projectId,
     stateBase64,
     groupName,
     resultName,
+    previousResultName: previousResultName || "",
     dataLayerName,
   });
 
@@ -416,7 +420,15 @@ export function createOutputLayerScript({
     var documentRef = app.activeDocument;
     var sourceLayer = findLayerById(documentRef, data.sourceLayerId);
     if (!sourceLayer) sourceLayer = findLayerByName(documentRef, data.sourceLayerName);
+    if (!sourceLayer && data.originalLayerName) {
+      sourceLayer = findLayerByName(documentRef, data.originalLayerName);
+    }
     if (!sourceLayer) throw new Error("The original source layer could not be found.");
+
+    // Keep the layer's pixels untouched; only append [Original] to its name.
+    if (data.originalLayerName && sourceLayer.name !== data.originalLayerName) {
+      try { sourceLayer.name = data.originalLayerName; } catch (_) {}
+    }
 
     documentRef.activeLayer = sourceLayer;
     app.open(data.dataUrl, null, true);
@@ -431,8 +443,12 @@ export function createOutputLayerScript({
       group.name = data.groupName;
     }
 
-    var previousResult = findLayerByName(group, data.resultName);
-    if (previousResult && previousResult !== resultLayer) previousResult.remove();
+    var previousNames = [data.resultName];
+    if (data.previousResultName) previousNames.push(data.previousResultName);
+    for (var p = 0; p < previousNames.length; p += 1) {
+      var previousResult = findLayerByName(group, previousNames[p]);
+      if (previousResult && previousResult !== resultLayer) previousResult.remove();
+    }
 
     resultLayer.name = data.resultName;
     resultLayer.move(group, ElementPlacement.INSIDE);
@@ -455,7 +471,8 @@ export function createOutputLayerScript({
       ok: true,
       projectId: data.projectId,
       groupName: data.groupName,
-      resultName: data.resultName
+      resultName: data.resultName,
+      originalLayerName: data.originalLayerName || sourceLayer.name
     });
   } catch (error) {
     echo("output-result", {
@@ -466,7 +483,7 @@ export function createOutputLayerScript({
 }());`;
 }
 
-export function toggleSavedOutput({ groupName, sourceLayerId, sourceLayerName }) {
+export function toggleSavedOutput({ groupName, sourceLayerId, sourceLayerName, originalLayerName = "" }) {
   const script = `
 (function () {
   ${commonScriptHelpers()}
@@ -477,6 +494,9 @@ export function toggleSavedOutput({ groupName, sourceLayerId, sourceLayerName })
     if (!group) throw new Error("The saved UV Warp group could not be found.");
     var source = findLayerById(documentRef, ${JSON.stringify(Number(sourceLayerId))});
     if (!source) source = findLayerByName(documentRef, ${JSON.stringify(sourceLayerName)});
+    if (!source && ${JSON.stringify(originalLayerName || "")}) {
+      source = findLayerByName(documentRef, ${JSON.stringify(originalLayerName || "")});
+    }
     if (!source) throw new Error("The original source layer could not be found.");
     var showResult = !group.visible;
     group.visible = showResult;

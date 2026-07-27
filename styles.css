@@ -542,6 +542,11 @@ button:disabled {
   opacity: 0.45;
 }
 
+.color-swatch.is-always-on:has(input:disabled) {
+  opacity: 1;
+  cursor: pointer;
+}
+
 .color-swatch input[type="color"] {
   position: absolute;
   inset: -4px;
