@@ -6,16 +6,22 @@ import {
   validateProjectMesh,
 } from "./mesh.js";
 import {
-  captureSource,
   createOutputLayerScript,
   isEmbeddedInPhotopea,
+  makeCloseTemporaryScript,
+  makePrepareCapturePngScript,
+  makeSnapshotScript,
   parsePhotopeaMessage,
+  postPhotopeaBinary,
   postPhotopeaScript,
+  readCaptureMeta,
   requestSelectedLayer,
   scanSavedWarps,
   toggleSavedOutput,
 } from "./photopea.js";
 import { drawWarpedMesh, meshWarnings } from "./warp.js";
+
+const CAPTURE_TIMEOUT_MS = 120_000;
 
 const elements = {
   shell: document.querySelector(".app-shell"),
@@ -71,8 +77,7 @@ const state = {
   captureMeta: null,
   sourceImage: null,
   backdropImage: null,
-  captureBuffers: [],
-  captureInProgress: false,
+  captureSession: null,
   pendingSavedProject: null,
   savedProjects: [],
   selectedPoints: new Set(),
@@ -790,14 +795,284 @@ function normalizeLoadedProject(project) {
   };
 }
 
-async function finishCapture() {
-  try {
-    if (state.captureBuffers.length !== 2 || !state.captureMeta) {
-      throw new Error("Photopea did not return both the source and reference images.");
+function clearCaptureTimeout(session = state.captureSession) {
+  if (!session?.timeoutId) return;
+  clearTimeout(session.timeoutId);
+  session.timeoutId = null;
+}
+
+function armCaptureTimeout(message) {
+  const session = state.captureSession;
+  if (!session) return;
+  clearCaptureTimeout(session);
+  session.timeoutId = setTimeout(() => {
+    if (state.captureSession !== session || session.finalizing) return;
+    failCapture(message);
+  }, CAPTURE_TIMEOUT_MS);
+}
+
+function setCaptureStatus(title, message) {
+  setStatus("info", title, message);
+}
+
+async function normalizeCaptureBuffer(data) {
+  if (data instanceof ArrayBuffer) return data;
+  if (data instanceof Blob) return data.arrayBuffer();
+  if (ArrayBuffer.isView(data)) {
+    return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+  }
+  return null;
+}
+
+function failCapture(message) {
+  const session = state.captureSession;
+  if (session) {
+    clearCaptureTimeout(session);
+    session.finalizing = true;
+    session.stage = "failed";
+  }
+  state.captureSession = null;
+  state.pendingSavedProject = null;
+  setProjectReady(false);
+  setBusy(false);
+  setStatus("error", "Capture failed", message);
+}
+
+function captureTempName(session, pass) {
+  return `__UV_WARP_CAPTURE__${session.token}-${pass}`;
+}
+
+function startSnapshot() {
+  const session = state.captureSession;
+  if (!session || session.finalizing) return;
+  session.stage = "snapshotting";
+  session.snapshotBuffer = null;
+  session.snapshotDone = false;
+  setCaptureStatus(
+    "Capturing source…",
+    "Creating an independent PSD snapshot. The original workfile is not modified.",
+  );
+  armCaptureTimeout(
+    "Photopea could not create an independent PSD snapshot of the original workfile.",
+  );
+  postPhotopeaScript(makeSnapshotScript());
+}
+
+function openCapturePass(pass) {
+  const session = state.captureSession;
+  if (!session || session.finalizing || !session.snapshotBuffer) return;
+  session.pass = pass;
+  session.current = {
+    bufferReceived: false,
+    renderDone: false,
+    cleanupResult: null,
+    cleanupDone: false,
+    temporaryDocumentName: captureTempName(session, pass),
+  };
+  session.stage = "opening-temporary";
+  setCaptureStatus(
+    "Capturing source…",
+    pass === "backdrop"
+      ? "Opening a temporary copy for the alignment reference…"
+      : "Opening a temporary copy for the isolated source…",
+  );
+  armCaptureTimeout(
+    `Photopea could not open the independent temporary copy for the ${pass}.`,
+  );
+  postPhotopeaBinary(session.snapshotBuffer.slice(0));
+}
+
+function prepareCapturePass() {
+  const session = state.captureSession;
+  if (
+    !session ||
+    session.finalizing ||
+    session.stage !== "opening-temporary" ||
+    !session.current ||
+    !session.meta
+  ) {
+    return;
+  }
+  const current = session.current;
+  session.stage = "rendering";
+  setCaptureStatus(
+    "Capturing source…",
+    session.pass === "backdrop"
+      ? "Rendering the visible reference underneath…"
+      : "Rendering the isolated source layer…",
+  );
+  armCaptureTimeout(
+    `Photopea did not finish rendering the ${session.pass}. Close any __UV_WARP_CAPTURE__ tab without saving; the original workfile was never edited.`,
+  );
+  postPhotopeaScript(
+    makePrepareCapturePngScript({
+      mode: session.pass,
+      sourceLayerId: session.meta.layerId,
+      hideGroupName: session.hideGroupName,
+      temporaryDocumentName: current.temporaryDocumentName,
+      sourceDocumentName: session.meta.documentName,
+      sourceDocumentSource: session.meta.documentSource,
+    }),
+  );
+}
+
+function maybeCloseCapturePass() {
+  const session = state.captureSession;
+  if (
+    !session ||
+    session.finalizing ||
+    session.stage !== "rendering" ||
+    !session.current?.bufferReceived ||
+    !session.current?.renderDone
+  ) {
+    return;
+  }
+  const current = session.current;
+  session.stage = "closing-temporary";
+  setCaptureStatus(
+    "Capturing source…",
+    "Closing the temporary copy and restoring the original workfile…",
+  );
+  armCaptureTimeout(
+    `The image was received, but Photopea did not close its temporary copy. Close “${current.temporaryDocumentName}” without saving; the original workfile was never edited.`,
+  );
+  postPhotopeaScript(
+    makeCloseTemporaryScript({
+      temporaryDocumentName: current.temporaryDocumentName,
+      sourceDocumentName: session.meta.documentName,
+      sourceDocumentSource: session.meta.documentSource,
+    }),
+  );
+}
+
+function maybeCompleteCapturePass() {
+  const session = state.captureSession;
+  if (
+    !session ||
+    session.finalizing ||
+    session.stage !== "closing-temporary" ||
+    !session.current?.cleanupResult ||
+    !session.current?.cleanupDone
+  ) {
+    return;
+  }
+
+  const result = session.current.cleanupResult;
+  if (!result.ok) {
+    failCapture(result.message || "Photopea could not close its temporary capture document.");
+    return;
+  }
+  if (!result.temporaryDocumentClosed) {
+    failCapture("Photopea left its temporary capture document open.");
+    return;
+  }
+  if (!result.sourceDocumentRestored) {
+    failCapture("Photopea could not restore the original workfile.");
+    return;
+  }
+
+  clearCaptureTimeout(session);
+  if (session.pass === "backdrop") {
+    openCapturePass("source");
+    return;
+  }
+
+  if (!session.backdropBuffer || !session.sourceBuffer) {
+    failCapture("Photopea did not return both the source and reference images.");
+    return;
+  }
+
+  session.stage = "finishing";
+  session.finalizing = true;
+  finishCapture(session);
+}
+
+function maybeStartCapturePasses() {
+  const session = state.captureSession;
+  if (
+    !session ||
+    session.finalizing ||
+    session.stage !== "snapshotting" ||
+    !session.snapshotBuffer ||
+    !session.snapshotDone
+  ) {
+    return;
+  }
+  clearCaptureTimeout(session);
+  openCapturePass("backdrop");
+}
+
+function handleCaptureDone() {
+  const session = state.captureSession;
+  if (!session || session.finalizing) return;
+
+  if (session.stage === "reading-meta") {
+    if (!session.meta) {
+      failCapture("Photopea finished without returning layer metadata.");
+      return;
     }
-    const [backdropImage, sourceImage] = await Promise.all(
-      state.captureBuffers.map(imageFromBuffer),
+    startSnapshot();
+    return;
+  }
+  if (session.stage === "snapshotting") {
+    session.snapshotDone = true;
+    maybeStartCapturePasses();
+    return;
+  }
+  if (session.stage === "opening-temporary") {
+    prepareCapturePass();
+    return;
+  }
+  if (session.stage === "rendering") {
+    if (!session.current) return;
+    session.current.renderDone = true;
+    maybeCloseCapturePass();
+    return;
+  }
+  if (session.stage === "closing-temporary") {
+    if (!session.current) return;
+    session.current.cleanupDone = true;
+    maybeCompleteCapturePass();
+  }
+}
+
+async function handleCaptureBuffer(buffer) {
+  const session = state.captureSession;
+  if (!session || session.finalizing) return;
+
+  if (session.stage === "snapshotting") {
+    if (session.snapshotBuffer) {
+      failCapture("Photopea returned more than one PSD snapshot.");
+      return;
+    }
+    session.snapshotBuffer = buffer;
+    setCaptureStatus(
+      "Capturing source…",
+      "Independent copy created. Preparing reference and source renders…",
     );
+    maybeStartCapturePasses();
+    return;
+  }
+
+  if (session.stage !== "rendering" || !session.current) return;
+  if (session.current.bufferReceived) {
+    failCapture("Photopea returned more than one PNG for a capture pass.");
+    return;
+  }
+
+  session.current.bufferReceived = true;
+  if (session.pass === "backdrop") session.backdropBuffer = buffer;
+  else session.sourceBuffer = buffer;
+  maybeCloseCapturePass();
+}
+
+async function finishCapture(session) {
+  try {
+    state.captureMeta = session.meta;
+    const [backdropImage, sourceImage] = await Promise.all([
+      imageFromBuffer(session.backdropBuffer),
+      imageFromBuffer(session.sourceBuffer),
+    ]);
     state.backdropImage = backdropImage;
     state.sourceImage = sourceImage;
     if (state.pendingSavedProject) {
@@ -836,8 +1111,8 @@ async function finishCapture() {
     setBusy(false);
     setStatus("error", "Capture failed", error.message);
   } finally {
-    state.captureInProgress = false;
-    state.captureBuffers = [];
+    clearCaptureTimeout(session);
+    state.captureSession = null;
   }
 }
 
@@ -851,19 +1126,34 @@ function beginCapture(savedProject = null) {
     );
     return;
   }
-  state.captureInProgress = true;
-  state.captureBuffers = [];
-  state.captureMeta = null;
+
+  const requestId = Date.now();
   state.pendingSavedProject = savedProject;
-  setBusy(true);
-  setStatus(
-    "info",
-    savedProject ? "Loading saved warp…" : "Capturing source…",
-    "Photopea is rendering the selected layer and the visible reference underneath.",
-  );
-  captureSource({
-    sourceLayerId: savedProject ? savedProject.source.layerId : null,
+  state.captureMeta = null;
+  state.captureSession = {
+    token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
+    requestId,
+    stage: "reading-meta",
+    finalizing: false,
+    timeoutId: null,
     hideGroupName: savedProject ? savedProject.output.groupName : "",
+    meta: null,
+    snapshotBuffer: null,
+    snapshotDone: false,
+    pass: null,
+    current: null,
+    backdropBuffer: null,
+    sourceBuffer: null,
+  };
+  setBusy(true);
+  setCaptureStatus(
+    savedProject ? "Loading saved warp…" : "Capturing source…",
+    "Reading the selected layer without changing the original workfile.",
+  );
+  armCaptureTimeout("Photopea did not respond while reading the selected layer.");
+  readCaptureMeta({
+    sourceLayerId: savedProject ? savedProject.source.layerId : null,
+    requestId,
   });
 }
 
@@ -1068,22 +1358,32 @@ function refreshPhotopeaState() {
   scanSavedWarps();
 }
 
-function handlePhotopeaResponse(event) {
+async function handlePhotopeaResponse(event) {
   if (event.source !== window.parent) return;
-  if (event.data instanceof ArrayBuffer) {
-    if (state.captureInProgress) state.captureBuffers.push(event.data);
+
+  if (event.data === "done") {
+    handleCaptureDone();
     return;
   }
+
+  if (state.captureSession && !state.captureSession.finalizing) {
+    const buffer = await normalizeCaptureBuffer(event.data);
+    if (buffer) {
+      await handleCaptureBuffer(buffer);
+      return;
+    }
+  }
+
   const message = parsePhotopeaMessage(event.data);
   if (!message) return;
 
   if (message.type === "selection") {
-    if (message.ok && !state.captureInProgress) {
+    if (message.ok && !state.captureSession) {
       elements.layerName.textContent = message.name;
       elements.layerMeta.textContent = `${Math.round(message.width)} × ${Math.round(
         message.height,
       )} px · ${message.smartObject ? "Smart Object" : "convert to Smart Object first"}`;
-    } else if (!message.ok && !state.captureInProgress) {
+    } else if (!message.ok && !state.captureSession) {
       elements.layerName.textContent = "No usable layer selected";
       elements.layerMeta.textContent = message.message;
     }
@@ -1091,19 +1391,36 @@ function handlePhotopeaResponse(event) {
   }
 
   if (message.type === "capture-meta") {
-    if (message.ok) state.captureMeta = message;
+    const session = state.captureSession;
+    if (!session || session.finalizing || session.stage !== "reading-meta") return;
+    if (message.requestId !== undefined && message.requestId !== session.requestId) return;
+    if (!message.ok) {
+      failCapture(message.message || "Photopea could not read the selected layer.");
+      return;
+    }
+    session.meta = message;
+    state.captureMeta = message;
+    setCaptureStatus(
+      "Capturing source…",
+      "Layer identified. Waiting for Photopea to finish before snapshotting…",
+    );
+    return;
+  }
+
+  if (message.type === "capture-cleanup") {
+    const session = state.captureSession;
+    if (!session || session.finalizing || session.stage !== "closing-temporary" || !session.current) {
+      return;
+    }
+    session.current.cleanupResult = message;
+    maybeCompleteCapturePass();
     return;
   }
 
   if (message.type === "capture-complete") {
     if (!message.ok) {
-      state.captureInProgress = false;
-      state.pendingSavedProject = null;
-      setBusy(false);
-      setStatus("error", "Capture failed", message.message);
-      return;
+      failCapture(message.message || "Capture failed.");
     }
-    finishCapture();
     return;
   }
 

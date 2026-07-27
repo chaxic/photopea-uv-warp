@@ -1,12 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  captureSource,
-  createOutputLayerScript,
+  makeCloseTemporaryScript,
+  makePrepareCapturePngScript,
+  makeSnapshotScript,
   parsePhotopeaMessage,
+  postPhotopeaScript,
+  readCaptureMeta,
   requestSelectedLayer,
   scanSavedWarps,
   toggleSavedOutput,
+  createOutputLayerScript,
 } from "../src/photopea.js";
 
 function capturePostedScript(action) {
@@ -28,8 +32,29 @@ test("every Photopea bridge action emits syntactically valid JavaScript", () => 
   const scripts = [
     capturePostedScript(() => requestSelectedLayer()),
     capturePostedScript(() =>
-      captureSource({ sourceLayerId: 12, hideGroupName: "UV Warp — Test" }),
+      readCaptureMeta({ sourceLayerId: 12, requestId: 99 }),
     ),
+    makeSnapshotScript(),
+    makePrepareCapturePngScript({
+      mode: "backdrop",
+      sourceLayerId: 12,
+      hideGroupName: "UV Warp — Test",
+      temporaryDocumentName: "__UV_WARP_CAPTURE__token-backdrop",
+      sourceDocumentName: "Building.psd",
+      sourceDocumentSource: "local,Building.psd",
+    }),
+    makePrepareCapturePngScript({
+      mode: "source",
+      sourceLayerId: 12,
+      temporaryDocumentName: "__UV_WARP_CAPTURE__token-source",
+      sourceDocumentName: "Building.psd",
+      sourceDocumentSource: "local,Building.psd",
+    }),
+    makeCloseTemporaryScript({
+      temporaryDocumentName: "__UV_WARP_CAPTURE__token-backdrop",
+      sourceDocumentName: "Building.psd",
+      sourceDocumentSource: "local,Building.psd",
+    }),
     capturePostedScript(() => scanSavedWarps()),
     capturePostedScript(() =>
       toggleSavedOutput({
@@ -59,4 +84,66 @@ test("Photopea bridge messages decode only the UV Warp protocol", () => {
     ok: true,
   });
   assert.equal(parsePhotopeaMessage("done"), null);
+});
+
+test("capture meta script includes a request id for stale reply protection", () => {
+  const script = capturePostedScript(() =>
+    readCaptureMeta({ sourceLayerId: null, requestId: 42 }),
+  );
+  assert.match(script, /requestId:\s*42|requestId = 42/);
+  assert.match(script, /capture-meta/);
+});
+
+test("snapshot script uses saveToOE psd without mutating the workfile", () => {
+  const script = makeSnapshotScript();
+  assert.match(script, /saveToOE\("psd"\)/);
+  assert.doesNotMatch(script, /\.visible\s*=/);
+  assert.doesNotMatch(script, /\.duplicate\(/);
+});
+
+test("prepare capture scripts isolate layers only in the temporary document", () => {
+  const backdrop = makePrepareCapturePngScript({
+    mode: "backdrop",
+    sourceLayerId: 7,
+    hideGroupName: "UV Warp — A",
+    temporaryDocumentName: "__UV_WARP_CAPTURE__a-backdrop",
+    sourceDocumentName: "Doc",
+    sourceDocumentSource: "src",
+  });
+  const source = makePrepareCapturePngScript({
+    mode: "source",
+    sourceLayerId: 7,
+    temporaryDocumentName: "__UV_WARP_CAPTURE__a-source",
+    sourceDocumentName: "Doc",
+    sourceDocumentSource: "src",
+  });
+  assert.match(backdrop, /temporaryDocument\.name = settings\.temporaryDocumentName/);
+  assert.match(backdrop, /saveToOE\("png"\)/);
+  assert.match(source, /hideEveryLayer\(temporaryDocument\)/);
+  assert.doesNotMatch(backdrop, /\.duplicate\(/);
+  assert.doesNotMatch(source, /\.duplicate\(/);
+});
+
+test("close temporary script restores the original workfile", () => {
+  const script = makeCloseTemporaryScript({
+    temporaryDocumentName: "__UV_WARP_CAPTURE__a-backdrop",
+    sourceDocumentName: "Doc",
+    sourceDocumentSource: "src",
+  });
+  assert.match(script, /DONOTSAVECHANGES/);
+  assert.match(script, /capture-cleanup/);
+  assert.match(script, /sourceDocumentRestored/);
+});
+
+test("postPhotopeaScript still posts to the parent frame", () => {
+  let posted;
+  globalThis.window = {
+    parent: {
+      postMessage(value) {
+        posted = value;
+      },
+    },
+  };
+  postPhotopeaScript("app.echoToOE('x');");
+  assert.equal(posted, "app.echoToOE('x');");
 });

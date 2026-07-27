@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const requiredFiles = [
   "index.html",
   "styles.css",
@@ -53,7 +54,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.2.0"',
+  'src="./?preview=1&v=0.2.1"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -71,6 +72,8 @@ for (const requirement of [
   "createOutputLayerScript",
   "scanSavedWarps",
   "UVWP_DATA_V1:",
+  'saveToOE("psd")',
+  "makeCloseTemporaryScript",
 ]) {
   if (!app.includes(requirement) && !photopea.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);

@@ -12,6 +12,13 @@ export function postPhotopeaScript(script) {
   window.parent.postMessage(script, "*");
 }
 
+export function postPhotopeaBinary(buffer) {
+  if (!isEmbeddedInPhotopea()) {
+    throw new Error("This panel must be opened inside Photopea.");
+  }
+  window.parent.postMessage(buffer, "*");
+}
+
 function commonScriptHelpers() {
   return `
   var prefix = ${JSON.stringify(MESSAGE_PREFIX)};
@@ -94,32 +101,14 @@ export function requestSelectedLayer() {
   postPhotopeaScript(script);
 }
 
-export function captureSource({
-  sourceLayerId = null,
-  hideGroupName = "",
-} = {}) {
+export function readCaptureMeta({ sourceLayerId = null, requestId = 0 } = {}) {
   const script = `
 (function () {
   ${commonScriptHelpers()}
-  var sourceDocument = null;
-  var captureDocument = null;
-  function hideEveryLayer(container) {
-    for (var i = 0; i < container.layers.length; i += 1) {
-      var item = container.layers[i];
-      if (item.typename === "LayerSet") hideEveryLayer(item);
-      try { item.visible = false; } catch (_) {}
-    }
-  }
-  function revealWithParents(layer, documentRef) {
-    var current = layer;
-    while (current && current !== documentRef) {
-      try { current.visible = true; } catch (_) {}
-      try { current = current.parent; } catch (_) { current = null; }
-    }
-  }
+  var requestId = ${JSON.stringify(Number(requestId) || 0)};
   try {
     if (!app.documents.length) throw new Error("Open a document first.");
-    sourceDocument = app.activeDocument;
+    var sourceDocument = app.activeDocument;
     var requestedId = ${sourceLayerId === null ? "null" : JSON.stringify(Number(sourceLayerId))};
     var sourceLayer = requestedId === null
       ? sourceDocument.activeLayer
@@ -134,6 +123,7 @@ export function captureSource({
     try { smart = sourceLayer.kind === LayerKind.SMARTOBJECT; } catch (_) {}
     echo("capture-meta", {
       ok: true,
+      requestId: requestId,
       documentName: sourceDocument.name,
       documentSource: String(sourceDocument.source || ""),
       documentWidth: documentWidth,
@@ -148,30 +138,125 @@ export function captureSource({
         bottom: px(bounds[3]) / documentHeight
       }
     });
+  } catch (error) {
+    echo("capture-meta", {
+      ok: false,
+      requestId: requestId,
+      message: error && error.message ? error.message : String(error)
+    });
+  }
+}());`;
 
-    captureDocument = sourceDocument.duplicate("__UV Warp Capture__", false);
-    var captureLayer = findLayerById(captureDocument, layerId(sourceLayer));
-    if (!captureLayer) captureLayer = captureDocument.activeLayer;
+  postPhotopeaScript(script);
+}
 
-    var groupToHide = findLayerSetByName(
-      captureDocument,
-      ${JSON.stringify(hideGroupName || "")}
-    );
-    if (groupToHide) groupToHide.visible = false;
-    captureLayer.visible = false;
-    captureDocument.saveToOE("png");
+export function makeSnapshotScript() {
+  return `
+(function () {
+  ${commonScriptHelpers()}
+  try {
+    if (!app.documents.length) throw new Error("Open a document first.");
+    // Untouched PSD snapshot for independent temporary documents.
+    // Destructive isolation never runs in the original workfile.
+    app.activeDocument.saveToOE("psd");
+  } catch (error) {
+    echo("capture-complete", {
+      ok: false,
+      message: error && error.message ? error.message : String(error)
+    });
+  }
+}());`;
+}
 
-    hideEveryLayer(captureDocument);
-    revealWithParents(captureLayer, captureDocument);
-    captureDocument.saveToOE("png");
+export function makePrepareCapturePngScript({
+  mode,
+  sourceLayerId,
+  hideGroupName = "",
+  temporaryDocumentName,
+  sourceDocumentName,
+  sourceDocumentSource,
+}) {
+  const payload = JSON.stringify({
+    mode,
+    sourceLayerId: Number(sourceLayerId),
+    hideGroupName: hideGroupName || "",
+    temporaryDocumentName,
+    sourceDocumentName,
+    sourceDocumentSource: sourceDocumentSource || "",
+  });
 
-    captureDocument.close(SaveOptions.DONOTSAVECHANGES);
-    captureDocument = null;
-    app.activeDocument = sourceDocument;
-    echo("capture-complete", { ok: true });
+  return `
+(function () {
+  ${commonScriptHelpers()}
+  var settings = ${payload};
+  var temporaryDocument = null;
+
+  function hideEveryLayer(container) {
+    for (var i = 0; i < container.layers.length; i += 1) {
+      var item = container.layers[i];
+      if (item.typename === "LayerSet") hideEveryLayer(item);
+      try { item.visible = false; } catch (_) {}
+    }
+  }
+  function revealWithParents(layer, documentRef) {
+    var current = layer;
+    while (current && current !== documentRef) {
+      try { current.visible = true; } catch (_) {}
+      try { current = current.parent; } catch (_) { current = null; }
+    }
+  }
+  function findSourceDocument() {
+    if (!app.documents) return null;
+    for (var i = 0; i < app.documents.length; i += 1) {
+      var documentRef = app.documents[i];
+      if (documentRef === temporaryDocument) continue;
+      var source = "";
+      try { source = String(documentRef.source || ""); } catch (_) {}
+      if (settings.sourceDocumentSource && source === settings.sourceDocumentSource) {
+        return documentRef;
+      }
+    }
+    for (var j = 0; j < app.documents.length; j += 1) {
+      var fallback = app.documents[j];
+      if (fallback !== temporaryDocument && String(fallback.name || "") === settings.sourceDocumentName) {
+        return fallback;
+      }
+    }
+    return null;
+  }
+
+  try {
+    if (!app.documents.length) throw new Error("Photopea could not open the temporary PSD snapshot.");
+    temporaryDocument = app.activeDocument;
+    if (!temporaryDocument) throw new Error("Photopea could not activate the temporary PSD snapshot.");
+    temporaryDocument.name = settings.temporaryDocumentName;
+
+    var captureLayer = findLayerById(temporaryDocument, settings.sourceLayerId);
+    if (!captureLayer) captureLayer = temporaryDocument.activeLayer;
+    if (!captureLayer || captureLayer.typename !== "ArtLayer") {
+      throw new Error("The source layer could not be found in the temporary copy.");
+    }
+
+    if (settings.mode === "backdrop") {
+      var groupToHide = findLayerSetByName(temporaryDocument, settings.hideGroupName);
+      if (groupToHide) groupToHide.visible = false;
+      captureLayer.visible = false;
+    } else {
+      hideEveryLayer(temporaryDocument);
+      revealWithParents(captureLayer, temporaryDocument);
+    }
+
+    app.activeDocument = temporaryDocument;
+    temporaryDocument.saveToOE("png");
   } catch (error) {
     try {
-      if (captureDocument) captureDocument.close(SaveOptions.DONOTSAVECHANGES);
+      if (temporaryDocument && temporaryDocument !== findSourceDocument()) {
+        app.activeDocument = temporaryDocument;
+        temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+      }
+    } catch (_) {}
+    try {
+      var sourceDocument = findSourceDocument();
       if (sourceDocument) app.activeDocument = sourceDocument;
     } catch (_) {}
     echo("capture-complete", {
@@ -180,8 +265,79 @@ export function captureSource({
     });
   }
 }());`;
+}
 
-  postPhotopeaScript(script);
+export function makeCloseTemporaryScript({
+  temporaryDocumentName,
+  sourceDocumentName,
+  sourceDocumentSource,
+}) {
+  const payload = JSON.stringify({
+    temporaryDocumentName,
+    sourceDocumentName,
+    sourceDocumentSource: sourceDocumentSource || "",
+  });
+
+  return `
+(function () {
+  ${commonScriptHelpers()}
+  var settings = ${payload};
+
+  function documentSource(documentRef) {
+    try { return String(documentRef.source || ""); } catch (_) { return ""; }
+  }
+  function findTemporaryDocument() {
+    if (!app.documents) return null;
+    for (var i = 0; i < app.documents.length; i += 1) {
+      var documentRef = app.documents[i];
+      if (String(documentRef.name || "") === settings.temporaryDocumentName) return documentRef;
+    }
+    return null;
+  }
+  function findSourceDocument(temporaryDocument) {
+    if (!app.documents) return null;
+    for (var i = 0; i < app.documents.length; i += 1) {
+      var documentRef = app.documents[i];
+      if (documentRef === temporaryDocument) continue;
+      if (settings.sourceDocumentSource && documentSource(documentRef) === settings.sourceDocumentSource) {
+        return documentRef;
+      }
+    }
+    for (var j = 0; j < app.documents.length; j += 1) {
+      var fallback = app.documents[j];
+      if (fallback !== temporaryDocument && String(fallback.name || "") === settings.sourceDocumentName) {
+        return fallback;
+      }
+    }
+    return null;
+  }
+
+  try {
+    var temporaryDocument = findTemporaryDocument();
+    var sourceDocument = findSourceDocument(temporaryDocument);
+    if (!temporaryDocument) throw new Error("Photopea could not find the temporary capture document.");
+    app.activeDocument = temporaryDocument;
+    temporaryDocument.close(SaveOptions.DONOTSAVECHANGES);
+    if (findTemporaryDocument()) throw new Error("Photopea left the temporary capture document open.");
+    if (!sourceDocument) throw new Error("Photopea could not find the original workfile.");
+    app.activeDocument = sourceDocument;
+    if (app.activeDocument !== sourceDocument) {
+      throw new Error("Photopea could not restore the original workfile.");
+    }
+    echo("capture-cleanup", {
+      ok: true,
+      temporaryDocumentClosed: true,
+      sourceDocumentRestored: true
+    });
+  } catch (error) {
+    echo("capture-cleanup", {
+      ok: false,
+      message: error && error.message ? error.message : String(error),
+      temporaryDocumentClosed: !findTemporaryDocument(),
+      sourceDocumentRestored: false
+    });
+  }
+}());`;
 }
 
 export function scanSavedWarps() {
