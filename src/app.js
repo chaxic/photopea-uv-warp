@@ -16,25 +16,30 @@ import {
 import {
   applyPenAction,
   deleteVertex,
+  edgeUsage,
   nearestEdge,
   nearestVertex,
   resolvePenAction,
   seedQuadMesh,
   triangulateFaces,
   validateFaces,
+  vertexUsage,
 } from "./polypen.js";
 import { drawWarpedMesh, meshWarnings, triangulateQuads } from "./warp.js";
 
 const CAPTURE_TIMEOUT_MS = 120_000;
 const HISTORY_LIMIT = 80;
+const EXPLODE_SCALE = 0.84;
 
 const elements = {
   shell: document.querySelector(".app-shell"),
   layerName: document.querySelector("#layer-name"),
   layerMeta: document.querySelector("#layer-meta"),
   captureSource: document.querySelector("#capture-source"),
+  clearSource: document.querySelector("#clear-source"),
   captureReference: document.querySelector("#capture-reference"),
   loadReference: document.querySelector("#load-reference"),
+  clearReference: document.querySelector("#clear-reference"),
   referenceFile: document.querySelector("#reference-file"),
   referenceName: document.querySelector("#reference-name"),
   referenceMeta: document.querySelector("#reference-meta"),
@@ -51,7 +56,8 @@ const elements = {
   previewToggle: document.querySelector("#preview-toggle"),
   meshToggle: document.querySelector("#mesh-toggle"),
   trianglesToggle: document.querySelector("#triangles-toggle"),
-  focusToggle: document.querySelector("#focus-toggle"),
+  connectionsToggle: document.querySelector("#connections-toggle"),
+  fullscreenToggle: document.querySelector("#fullscreen-toggle"),
   editorWrap: document.querySelector("#editor-wrap"),
   canvas: document.querySelector("#warp-canvas"),
   emptyState: document.querySelector("#empty-state"),
@@ -80,7 +86,8 @@ const state = {
   preview: true,
   meshVisible: true,
   trianglesVisible: false,
-  focus: false,
+  connectionsVisible: false,
+  fullscreen: false,
   busy: false,
   project: null,
   captureMeta: null,
@@ -93,6 +100,7 @@ const state = {
   selectedEdge: null,
   selectedFace: null,
   penPreview: null,
+  hoverVertex: -1,
   drag: null,
   undo: [],
   redo: [],
@@ -124,8 +132,10 @@ function setBusy(busy) {
     if (element) element.disabled = busy || (unlessReady && !state.project);
   };
   disabled(elements.captureSource);
+  disabled(elements.clearSource, true);
   disabled(elements.captureReference, true);
   disabled(elements.loadReference, true);
+  disabled(elements.clearReference, true);
   disabled(elements.refreshProjects);
   disabled(elements.loadProject);
   disabled(elements.toggleOutput);
@@ -145,15 +155,51 @@ function setProjectReady(ready) {
   elements.canvas.classList.toggle("is-ready", ready);
   for (const element of [
     elements.modeLayout, elements.modeWarp, elements.previewToggle, elements.meshToggle,
-    elements.trianglesToggle, elements.focusToggle, elements.toolPen, elements.toolSelect,
+    elements.trianglesToggle, elements.connectionsToggle, elements.fullscreenToggle,
+    elements.toolPen, elements.toolSelect,
     elements.insertMode, elements.deleteSelection, elements.sourceOpacity,
     elements.referenceOpacity, elements.resetLayout, elements.resetWarp, elements.createOutput,
+    elements.clearSource, elements.captureReference, elements.loadReference,
   ]) {
     element.disabled = !ready || state.busy;
   }
-  elements.captureReference.disabled = !ready || state.busy;
-  elements.loadReference.disabled = !ready || state.busy;
   elements.referenceFile.disabled = !ready || state.busy;
+  elements.clearReference.disabled = !ready || state.busy || !state.backdropImage;
+}
+
+function setReferenceSummary(name, meta) {
+  elements.referenceName.textContent = name;
+  elements.referenceMeta.textContent = meta;
+  elements.clearReference.disabled = state.busy || !state.project || !state.backdropImage;
+}
+
+function clearReference() {
+  if (state.busy || !state.backdropImage) return;
+  state.backdropImage = null;
+  setReferenceSummary("No reference loaded", "Select another layer and capture it, or load an image.");
+  setStatus("info", "Reference cleared", "The source and its mesh were kept.");
+  scheduleRender();
+}
+
+function clearSource() {
+  if (state.busy || !state.project) return;
+  state.project = null;
+  state.captureMeta = null;
+  state.sourceImage = null;
+  state.backdropImage = null;
+  state.pendingSavedProject = null;
+  state.undo = [];
+  state.redo = [];
+  clearSelection();
+  elements.layerName.textContent = "No source captured";
+  elements.layerMeta.textContent = "Select a Smart Object in Photopea.";
+  setReferenceSummary("No reference loaded", "Select another layer and capture it, or load an image.");
+  setProjectReady(false);
+  updateHistoryButtons();
+  setMode("layout");
+  setStatus("info", "Source cleared", "The PSD was not changed. Select a layer and capture it again.");
+  refreshPhotopeaState();
+  scheduleRender();
 }
 
 function normalizedSourceBounds() {
@@ -239,13 +285,14 @@ function setMode(mode) {
   setToggle(elements.modeLayout, mode === "layout");
   setToggle(elements.modeWarp, mode === "warp");
   elements.layoutTools.classList.toggle("is-hidden", mode !== "layout");
-  elements.canvasBadge.textContent = mode === "layout"
+  const badge = mode === "layout"
     ? `Layout · ${state.layoutTool === "pen" ? "Pen tool" : "Select tool"}`
     : state.preview ? "Warp · live preview" : "Warp · original preview";
+  elements.canvasBadge.textContent = state.connectionsVisible ? `${badge} · connection check` : badge;
   elements.selectionHint.textContent = mode === "layout"
     ? state.layoutTool === "pen"
-      ? "Use Pen to create faces. Select an edge, then click another edge to bridge a gap."
-      : "Select points or edges, then drag them. Shift-click adds points."
+      ? "Pen (P): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge."
+      : "Select (V): click or shift-click points, then drag. Arrow keys nudge."
     : "Move matching points onto the reference. Preview updates live.";
   scheduleRender();
 }
@@ -256,6 +303,41 @@ function setLayoutTool(tool) {
   setToggle(elements.toolPen, tool === "pen");
   setToggle(elements.toolSelect, tool === "select");
   setMode("layout");
+}
+
+function togglePreview() {
+  state.preview = !state.preview;
+  setToggle(elements.previewToggle, state.preview);
+  setMode(state.mode);
+}
+
+function toggleMesh() {
+  state.meshVisible = !state.meshVisible;
+  setToggle(elements.meshToggle, state.meshVisible);
+  scheduleRender();
+}
+
+function toggleTriangles() {
+  state.trianglesVisible = !state.trianglesVisible;
+  setToggle(elements.trianglesToggle, state.trianglesVisible);
+  scheduleRender();
+}
+
+function toggleConnections() {
+  state.connectionsVisible = !state.connectionsVisible;
+  setToggle(elements.connectionsToggle, state.connectionsVisible);
+  if (state.connectionsVisible) {
+    setStatus("info", "Connection check on",
+      "Faces are pulled apart. Green links mean welded points, amber means only one face uses that point or edge, red rings are loose points.");
+  }
+  setMode(state.mode);
+}
+
+function toggleFullscreen() {
+  state.fullscreen = !state.fullscreen;
+  elements.shell.classList.toggle("is-fullscreen", state.fullscreen);
+  setToggle(elements.fullscreenToggle, state.fullscreen);
+  scheduleRender();
 }
 
 function prepareCanvas() {
@@ -337,6 +419,98 @@ function sameEdge(edgeA, edgeB) {
   );
 }
 
+function explodedFacePoints(face, points) {
+  const corners = face.map((index) => points[index]);
+  if (!state.connectionsVisible) return corners;
+  const centerX = corners.reduce((total, point) => total + point.x, 0) / corners.length;
+  const centerY = corners.reduce((total, point) => total + point.y, 0) / corners.length;
+  return corners.map((point) => ({
+    x: centerX + (point.x - centerX) * EXPLODE_SCALE,
+    y: centerY + (point.y - centerY) * EXPLODE_SCALE,
+  }));
+}
+
+function tracePolygon(context, corners) {
+  context.beginPath();
+  corners.forEach((point, position) => position ? context.lineTo(point.x, point.y) : context.moveTo(point.x, point.y));
+  context.closePath();
+}
+
+/**
+ * Connection check: faces shrink toward their centre so welded points show a
+ * fan of links back to one shared position, while loose points stand alone.
+ */
+function drawConnectionCheck(context, metrics, points, faces) {
+  const usage = vertexUsage(faces, points.length);
+  const openEdges = edgeUsage(faces);
+  context.save();
+  context.lineWidth = metrics.ratio;
+  for (const face of faces) {
+    const corners = explodedFacePoints(face, points);
+    face.forEach((index, position) => {
+      const anchor = points[index];
+      const corner = corners[position];
+      context.strokeStyle = usage[index] > 1 ? "rgba(97, 213, 156, 0.85)" : "rgba(240, 189, 101, 0.7)";
+      context.beginPath();
+      context.moveTo(corner.x, corner.y);
+      context.lineTo(anchor.x, anchor.y);
+      context.stroke();
+    });
+  }
+  context.lineWidth = 2.2 * metrics.ratio;
+  context.strokeStyle = "rgba(240, 189, 101, 0.75)";
+  for (const [key, count] of openEdges) {
+    if (count !== 1) continue;
+    const [a, b] = key.split(":").map(Number);
+    context.beginPath();
+    context.moveTo(points[a].x, points[a].y);
+    context.lineTo(points[b].x, points[b].y);
+    context.stroke();
+  }
+  usage.forEach((count, index) => {
+    if (count) return;
+    const point = points[index];
+    context.beginPath();
+    context.arc(point.x, point.y, 6.5 * metrics.ratio, 0, Math.PI * 2);
+    context.strokeStyle = "rgba(240, 120, 120, 0.9)";
+    context.lineWidth = 1.6 * metrics.ratio;
+    context.stroke();
+  });
+  context.restore();
+}
+
+function drawVertices(context, metrics, points) {
+  const layout = state.mode === "layout";
+  points.forEach((point, index) => {
+    const selected = state.selectedPoints.has(index);
+    const hovered = index === state.hoverVertex;
+    if (selected) {
+      context.beginPath();
+      context.arc(point.x, point.y, 9.5 * metrics.ratio, 0, Math.PI * 2);
+      context.fillStyle = "rgba(255, 209, 102, 0.18)";
+      context.fill();
+      context.beginPath();
+      context.arc(point.x, point.y, 8 * metrics.ratio, 0, Math.PI * 2);
+      context.strokeStyle = "#ffd166";
+      context.lineWidth = 1.6 * metrics.ratio;
+      context.stroke();
+    } else if (hovered) {
+      context.beginPath();
+      context.arc(point.x, point.y, 8 * metrics.ratio, 0, Math.PI * 2);
+      context.strokeStyle = "rgba(255, 255, 255, 0.55)";
+      context.lineWidth = 1.3 * metrics.ratio;
+      context.stroke();
+    }
+    context.beginPath();
+    context.arc(point.x, point.y, (selected ? 5.2 : hovered ? 4.8 : 4.1) * metrics.ratio, 0, Math.PI * 2);
+    context.fillStyle = selected ? "#ffd166" : layout ? "#cbd0ff" : "#b8ffe9";
+    context.fill();
+    context.strokeStyle = selected ? "#3a2c05" : layout ? "#5868e6" : "#168d6b";
+    context.lineWidth = (selected ? 2.2 : 1.4) * metrics.ratio;
+    context.stroke();
+  });
+}
+
 function drawMeshOverlay(context, metrics) {
   if (!state.meshVisible || !state.project) return;
   const mesh = state.project.mesh;
@@ -348,9 +522,7 @@ function drawMeshOverlay(context, metrics) {
   for (const face of mesh.quads) {
     const faceSelected = state.selectedFace && face.length === state.selectedFace.length &&
       face.every((index, position) => index === state.selectedFace[position]);
-    context.beginPath();
-    face.forEach((index, position) => position ? context.lineTo(points[index].x, points[index].y) : context.moveTo(points[index].x, points[index].y));
-    context.closePath();
+    tracePolygon(context, explodedFacePoints(face, points));
     context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.16)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
     context.fill();
     context.strokeStyle = state.mode === "layout" ? "rgba(170, 178, 255, 0.92)" : "rgba(105, 232, 194, 0.94)";
@@ -362,13 +534,12 @@ function drawMeshOverlay(context, metrics) {
     context.strokeStyle = "rgba(255, 205, 104, 0.88)";
     context.lineWidth = metrics.ratio;
     for (const triangle of triangulateFaces(mesh.quads)) {
-      context.beginPath();
-      triangle.forEach((index, position) => position ? context.lineTo(points[index].x, points[index].y) : context.moveTo(points[index].x, points[index].y));
-      context.closePath();
+      tracePolygon(context, explodedFacePoints(triangle, points));
       context.stroke();
     }
     context.setLineDash([]);
   }
+  if (state.connectionsVisible) drawConnectionCheck(context, metrics, points, mesh.quads);
   if (state.selectedEdge) {
     const [a, b] = state.selectedEdge;
     context.beginPath();
@@ -378,16 +549,7 @@ function drawMeshOverlay(context, metrics) {
     context.lineWidth = 3 * metrics.ratio;
     context.stroke();
   }
-  points.forEach((point, index) => {
-    const selected = state.selectedPoints.has(index);
-    context.beginPath();
-    context.arc(point.x, point.y, (selected ? 5.4 : 4.1) * metrics.ratio, 0, Math.PI * 2);
-    context.fillStyle = selected ? "#ffffff" : state.mode === "layout" ? "#cbd0ff" : "#b8ffe9";
-    context.fill();
-    context.strokeStyle = state.mode === "layout" ? "#5868e6" : "#168d6b";
-    context.lineWidth = (selected ? 2 : 1.4) * metrics.ratio;
-    context.stroke();
-  });
+  drawVertices(context, metrics, points);
   context.restore();
 }
 
@@ -453,6 +615,11 @@ function hitThreshold(metrics) {
   return (11 * metrics.ratio) / Math.min(metrics.drawWidth, metrics.drawHeight);
 }
 
+/** Points get a wider catch radius than edges so welding is easy to hit. */
+function vertexHitThreshold(metrics) {
+  return (15 * metrics.ratio) / Math.min(metrics.drawWidth, metrics.drawHeight);
+}
+
 function activeVertices() {
   return state.mode === "layout" ? state.project.mesh.sourceVertices : state.project.mesh.warpVertices;
 }
@@ -493,7 +660,7 @@ function applyPen(pointerDocument, metrics) {
     sourceVertices: mesh.sourceVertices,
     faces: mesh.quads,
     insertMode: state.insertMode,
-    snapThreshold: hitThreshold(metrics),
+    snapThreshold: vertexHitThreshold(metrics),
   });
   const before = snapshotMesh();
   try {
@@ -525,10 +692,11 @@ function handlePointerDown(event) {
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
   const vertices = activeVertices();
   const threshold = hitThreshold(metrics);
+  const vertexThreshold = vertexHitThreshold(metrics);
   if (state.mode === "layout" && state.layoutTool === "pen") {
     const edgeResult = nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold);
-    const vertex = nearestVertex(pointerDocument, vertices, threshold);
-    if (edgeResult && vertex < 0 && !state.selectedEdge) {
+    const vertex = nearestVertex(pointerDocument, vertices, vertexThreshold);
+    if (edgeResult && vertex < 0 && !state.selectedEdge && state.selectedPoints.size !== 2) {
       selectEdge(edgeResult.edge, event.shiftKey);
       state.penPreview = null;
       scheduleRender();
@@ -538,7 +706,7 @@ function handlePointerDown(event) {
     applyPen(pointerDocument, metrics);
     return;
   }
-  const vertex = nearestVertex(pointerDocument, vertices, threshold);
+  const vertex = nearestVertex(pointerDocument, vertices, vertexThreshold);
   if (vertex >= 0) {
     if (event.shiftKey) {
       if (state.selectedPoints.has(vertex)) state.selectedPoints.delete(vertex);
@@ -564,6 +732,9 @@ function handlePointerMove(event) {
   const metrics = viewportMetrics();
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
   if (!state.drag) {
+    const hovered = nearestVertex(pointerDocument, activeVertices(), vertexHitThreshold(metrics));
+    const hoverChanged = hovered !== state.hoverVertex;
+    state.hoverVertex = hovered;
     if (state.mode === "layout" && state.layoutTool === "pen") {
       state.penPreview = resolvePenAction({
         selection: { vertices: [...state.selectedPoints], edge: state.selectedEdge, face: state.selectedFace },
@@ -571,8 +742,10 @@ function handlePointerMove(event) {
         sourceVertices: state.project.mesh.sourceVertices,
         faces: state.project.mesh.quads,
         insertMode: state.insertMode,
-        snapThreshold: hitThreshold(metrics),
+        snapThreshold: vertexHitThreshold(metrics),
       });
+      scheduleRender();
+    } else if (hoverChanged) {
       scheduleRender();
     }
     return;
@@ -656,6 +829,18 @@ function nudgeSelection(event) {
   return true;
 }
 
+const TOOL_HOTKEYS = {
+  1: () => setMode("layout"),
+  2: () => setMode("warp"),
+  3: toggleConnections,
+  p: () => setLayoutTool("pen"),
+  v: () => setLayoutTool("select"),
+  e: togglePreview,
+  m: toggleMesh,
+  t: toggleTriangles,
+  f: toggleFullscreen,
+};
+
 function handleKeyDown(event) {
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.key.toLowerCase() === "z") {
@@ -668,12 +853,27 @@ function handleKeyDown(event) {
     redo();
     return;
   }
+  if (modifier || event.altKey) return;
+  if (event.key === "Escape" && state.project) {
+    event.preventDefault();
+    clearSelection();
+    scheduleRender();
+    return;
+  }
   if ((event.key === "Delete" || event.key === "Backspace") && state.project) {
     event.preventDefault();
     deleteSelection();
     return;
   }
-  if (nudgeSelection(event)) event.preventDefault();
+  if (nudgeSelection(event)) {
+    event.preventDefault();
+    return;
+  }
+  const hotkey = TOOL_HOTKEYS[event.key.toLowerCase()];
+  if (hotkey && state.project && !state.busy) {
+    event.preventDefault();
+    hotkey();
+  }
 }
 
 function resetLayout() {
@@ -849,10 +1049,10 @@ function renderTemporaryCapture() {
   const session = state.captureSession;
   if (!session || session.finalizing || session.stage !== "opening-temporary" || !session.current) return;
   session.stage = "rendering";
-  setStatus("info", captureTitle(session), session.mode === "source" ? "Rendering the isolated source layer…" : "Rendering the document underneath the source…");
+  setStatus("info", captureTitle(session), `Rendering the isolated ${session.mode} layer…`);
   armCaptureTimeout(`Photopea did not finish rendering the ${session.mode}. Close the temporary capture tab without saving; the original workfile was never edited.`);
   postPhotopeaScript(makePrepareCapturePngScript({
-    mode: session.mode,
+    mode: session.captureMode,
     sourceLayerId: session.sourceMeta.layerId,
     hideGroupName: session.hideGroupName,
     temporaryDocumentName: session.current.temporaryDocumentName,
@@ -906,11 +1106,18 @@ async function finishSourceCapture(session) {
 
 async function finishReferenceCapture(session) {
   state.backdropImage = await imageFromBuffer(session.current.buffer);
-  elements.referenceName.textContent = "Captured document reference";
-  elements.referenceMeta.textContent = `${Math.round(state.captureMeta.documentWidth)} × ${Math.round(state.captureMeta.documentHeight)} px · source layer hidden`;
+  const sameLayer = session.sourceMeta.layerId === state.captureMeta?.layerId;
+  setReferenceSummary(
+    session.sourceMeta.layerName,
+    `${Math.round(session.sourceMeta.documentWidth)} × ${Math.round(session.sourceMeta.documentHeight)} px · captured layer`,
+  );
   setBusy(false);
   setProjectReady(true);
-  setStatus("success", "Reference captured", "The source mesh was preserved and can now be aligned in Warp.");
+  setStatus(sameLayer ? "warning" : "success",
+    sameLayer ? "Reference matches the source" : "Reference captured",
+    sameLayer
+      ? "The same layer was selected for both. Select a different layer in Photopea and capture again."
+      : "Only that layer was captured. The source mesh was preserved and can be aligned in Warp.");
   scheduleRender();
 }
 
@@ -987,7 +1194,7 @@ function beginSourceCapture(savedProject = null) {
   state.pendingSavedProject = savedProject;
   state.captureSession = {
     token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
-    requestId, mode: "source", stage: "reading-meta", finalizing: false, timeoutId: null,
+    requestId, mode: "source", captureMode: "source", stage: "reading-meta", finalizing: false, timeoutId: null,
     sourceMeta: null, snapshotBuffer: null, snapshotDone: false, current: null,
     hideGroupName: savedProject?.output?.groupName || "",
   };
@@ -1006,14 +1213,14 @@ function beginReferenceCapture() {
   const requestId = Date.now();
   state.captureSession = {
     token: `${requestId}-${Math.random().toString(36).slice(2, 8)}`,
-    requestId, mode: "backdrop", stage: "reading-meta", finalizing: false, timeoutId: null,
+    requestId, mode: "reference", captureMode: "source", stage: "reading-meta", finalizing: false, timeoutId: null,
     sourceMeta: null, snapshotBuffer: null, snapshotDone: false, current: null,
-    hideGroupName: state.project.output?.groupName || "",
+    hideGroupName: "",
   };
   setBusy(true);
-  setStatus("info", "Capturing reference…", "Reading the captured source layer without changing the original workfile.");
+  setStatus("info", "Capturing reference…", "Reading the layer selected in Photopea without changing the original workfile.");
   armCaptureTimeout("Photopea did not respond while preparing the reference capture.");
-  readCaptureMeta({ sourceLayerId: state.captureMeta.layerId, requestId });
+  readCaptureMeta({ sourceLayerId: null, requestId });
 }
 
 function serializeProject() {
@@ -1204,8 +1411,10 @@ async function handlePhotopeaResponse(event) {
 }
 
 elements.captureSource.addEventListener("click", () => beginSourceCapture());
+elements.clearSource.addEventListener("click", clearSource);
 elements.captureReference.addEventListener("click", beginReferenceCapture);
 elements.loadReference.addEventListener("click", () => elements.referenceFile.click());
+elements.clearReference.addEventListener("click", clearReference);
 elements.referenceFile.addEventListener("change", async () => {
   const [file] = elements.referenceFile.files;
   if (!file || !state.project || state.busy) return;
@@ -1213,8 +1422,7 @@ elements.referenceFile.addEventListener("change", async () => {
     setBusy(true);
     setStatus("info", "Loading reference…", "Reading the selected image.");
     state.backdropImage = await readReferenceFile(file);
-    elements.referenceName.textContent = file.name;
-    elements.referenceMeta.textContent = `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px image`;
+    setReferenceSummary(file.name, `${state.backdropImage.naturalWidth} × ${state.backdropImage.naturalHeight} px image`);
     setStatus("success", "Reference loaded", "The source mesh was preserved.");
   } catch (error) {
     setStatus("error", "Could not load reference", error.message);
@@ -1231,10 +1439,11 @@ elements.modeLayout.addEventListener("click", () => setMode("layout"));
 elements.modeWarp.addEventListener("click", () => setMode("warp"));
 elements.toolPen.addEventListener("click", () => setLayoutTool("pen"));
 elements.toolSelect.addEventListener("click", () => setLayoutTool("select"));
-elements.previewToggle.addEventListener("click", () => { state.preview = !state.preview; setToggle(elements.previewToggle, state.preview); setMode(state.mode); });
-elements.meshToggle.addEventListener("click", () => { state.meshVisible = !state.meshVisible; setToggle(elements.meshToggle, state.meshVisible); scheduleRender(); });
-elements.trianglesToggle.addEventListener("click", () => { state.trianglesVisible = !state.trianglesVisible; setToggle(elements.trianglesToggle, state.trianglesVisible); scheduleRender(); });
-elements.focusToggle.addEventListener("click", () => { state.focus = !state.focus; elements.shell.classList.toggle("is-focus", state.focus); setToggle(elements.focusToggle, state.focus); scheduleRender(); });
+elements.previewToggle.addEventListener("click", togglePreview);
+elements.meshToggle.addEventListener("click", toggleMesh);
+elements.trianglesToggle.addEventListener("click", toggleTriangles);
+elements.connectionsToggle.addEventListener("click", toggleConnections);
+elements.fullscreenToggle.addEventListener("click", toggleFullscreen);
 elements.insertMode.addEventListener("change", () => { state.insertMode = elements.insertMode.value; state.penPreview = null; scheduleRender(); });
 for (const [input, output] of [[elements.sourceOpacity, elements.sourceOpacityValue], [elements.referenceOpacity, elements.referenceOpacityValue]]) {
   input.addEventListener("input", () => { output.textContent = `${input.value}%`; scheduleRender(); });
@@ -1249,6 +1458,13 @@ elements.canvas.addEventListener("pointerdown", handlePointerDown);
 elements.canvas.addEventListener("pointermove", handlePointerMove);
 elements.canvas.addEventListener("pointerup", finishPointerDrag);
 elements.canvas.addEventListener("pointercancel", finishPointerDrag);
+elements.canvas.addEventListener("pointerleave", () => {
+  if (state.drag) return;
+  const hadHint = state.hoverVertex >= 0 || state.penPreview;
+  state.hoverVertex = -1;
+  state.penPreview = null;
+  if (hadHint) scheduleRender();
+});
 window.addEventListener("keydown", (event) => {
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
   handleKeyDown(event);
@@ -1260,6 +1476,8 @@ new ResizeObserver(scheduleRender).observe(elements.editorWrap);
 setToggle(elements.previewToggle, state.preview);
 setToggle(elements.meshToggle, state.meshVisible);
 setToggle(elements.trianglesToggle, state.trianglesVisible);
+setToggle(elements.connectionsToggle, state.connectionsVisible);
+setToggle(elements.fullscreenToggle, state.fullscreen);
 setToggle(elements.toolPen, true);
 setProjectReady(false);
 updateHistoryButtons();

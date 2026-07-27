@@ -2,13 +2,13 @@
 
 UV Warp is a panel plugin that adds an editable, connected mesh warp workflow to Photopea. It renders the deformation inside the plugin instead of relying on Photopea's scripted Perspective Warp command.
 
-**Current version:** v0.3.0
+**Current version:** v0.3.1
 
-[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.0)
+[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.1)
 
 ## Install
 
-1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.0).
+1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.1).
 2. Download `uv-warp-photopea.json`.
 3. In Photopea, choose **Window → Plugins → Add Plugin**.
 4. Select the downloaded JSON file.
@@ -18,11 +18,29 @@ No Node.js, terminal, login, or backend is required to install or use the plugin
 ## Workflow
 
 1. Convert the source image to a Smart Object and select it.
-2. Click **Capture selected** — only that layer is captured.
-3. Optionally **Capture reference** (document underneath) or **Load image** for alignment.
-4. In **Layout**, use the **Pen** tool (RetopoFlow PolyPen–style) to grow and bridge mesh faces over the source.
-5. Switch to **Warp**, move matching points onto the reference, and toggle **Preview** / **Triangles**.
+2. Under **Source**, click **Capture selected** — only that layer is captured.
+3. Optionally select another layer and click **Capture selected** under **Reference**, or **Load image**.
+4. In **Layout**, use the **Pen** tool (RetopoFlow PolyPen–style) to grow and bridge mesh faces over the source. Click an existing point to weld onto it.
+5. Switch to **Warp**, move matching points onto the reference, and toggle **Preview** / **Triangles** / **Connections**.
 6. Click **Create output** to add the warped result to the PSD.
+
+Use **Clear** under either bar to drop the captured source or reference without touching the PSD.
+
+## Hotkeys
+
+| Key | Action |
+| --- | --- |
+| `1` / `2` | Layout / Warp mode |
+| `P` / `V` | Pen / Select tool |
+| `E` | Live warp preview |
+| `M` | Mesh lines |
+| `T` | Triangles |
+| `3` | Connection check |
+| `F` | Fullscreen |
+| `Esc` | Clear selection |
+| `Del` | Delete selected points |
+| Arrows | Nudge (hold `Shift` for 10 px) |
+| `Ctrl`+`Z` | Undo (add `Shift` to redo) |
 
 The plugin creates:
 
@@ -44,7 +62,8 @@ The original source is hidden, not modified. Use **On / off** to restore it. The
 - Undo and redo inside the editor
 - Independent source and reference opacity
 - Triangles overlay for warp diagnostics
-- Focus mode for a larger canvas
+- Connection check that pulls faces apart to reveal unwelded points
+- Fullscreen mode for a larger canvas
 - Full-document transparent PNG output
 - PSD-backed editable project data
 - Original / result on-off switch

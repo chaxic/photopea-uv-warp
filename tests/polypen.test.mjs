@@ -4,12 +4,14 @@ import {
   applyPenAction,
   bridgeEdges,
   deleteVertex,
+  edgeUsage,
   resolvePenAction,
   seedQuadMesh,
   snapToMesh,
   splitEdge,
   triangulateFaces,
   validateFaces,
+  vertexUsage,
 } from "../src/polypen.js";
 
 test("seed quad covers the source bounds", () => {
@@ -152,6 +154,74 @@ test("snapToMesh prefers nearby vertices", () => {
   const snap = snapToMesh({ x: 0.21, y: 0.19 }, vertices, [], 0.05);
   assert.equal(snap.kind, "vertex");
   assert.equal(snap.index, 0);
+});
+
+test("clicking an existing point welds instead of adding a duplicate", () => {
+  const vertices = [
+    { x: 0.1, y: 0.1 },
+    { x: 0.4, y: 0.1 },
+    { x: 0.25, y: 0.4 },
+  ];
+  const action = resolvePenAction({
+    selection: { vertices: [0, 1], edge: [0, 1], face: null },
+    clickPoint: { x: 0.252, y: 0.402 },
+    sourceVertices: vertices,
+    faces: [],
+    insertMode: "tri-quad",
+    snapThreshold: 0.02,
+  });
+  assert.equal(action.type, "extrude-triangle");
+  assert.equal(action.toExisting, 2);
+  const result = applyPenAction(action, vertices, clone(vertices), []);
+  assert.equal(result.sourceVertices.length, 3);
+  assert.deepEqual(result.faces, [[0, 1, 2]]);
+});
+
+test("two selected points act as an edge for the next pen click", () => {
+  const vertices = [
+    { x: 0.1, y: 0.1 },
+    { x: 0.4, y: 0.1 },
+  ];
+  const action = resolvePenAction({
+    selection: { vertices: [0, 1], edge: null, face: null },
+    clickPoint: { x: 0.25, y: 0.4 },
+    sourceVertices: vertices,
+    faces: [],
+    insertMode: "tri-quad",
+    snapThreshold: 0.01,
+  });
+  assert.equal(action.type, "extrude-triangle");
+  const result = applyPenAction(action, vertices, clone(vertices), []);
+  assert.equal(result.faces.length, 1);
+});
+
+test("clicking a point of the active edge restarts from that point", () => {
+  const vertices = [
+    { x: 0.1, y: 0.1 },
+    { x: 0.4, y: 0.1 },
+  ];
+  const action = resolvePenAction({
+    selection: { vertices: [0, 1], edge: [0, 1], face: null },
+    clickPoint: { x: 0.101, y: 0.101 },
+    sourceVertices: vertices,
+    faces: [],
+    insertMode: "tri-quad",
+    snapThreshold: 0.02,
+  });
+  assert.equal(action.type, "select-only");
+  assert.equal(action.vertexIndex, 0);
+});
+
+test("connection counts expose shared points and open edges", () => {
+  const faces = [
+    [0, 1, 2],
+    [1, 3, 2],
+  ];
+  const usage = vertexUsage(faces, 5);
+  assert.deepEqual(usage, [1, 2, 2, 1, 0]);
+  const edges = edgeUsage(faces);
+  assert.equal(edges.get("1:2"), 2);
+  assert.equal(edges.get("0:1"), 1);
 });
 
 test("triangulateFaces keeps triangles and splits quads", () => {

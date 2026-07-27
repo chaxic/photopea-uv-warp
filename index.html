@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.3.0" />
-    <link rel="stylesheet" href="./installer.css?v=0.3.0" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.1" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.1" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.3.0</span>
+            <span class="install-version">v0.3.1</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.3.0</strong>
+              <strong>v0.3.1</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.3.0"
+              src="./?preview=1&v=0.3.1"
               loading="eager"
             ></iframe>
           </div>
@@ -140,65 +140,22 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.3.0</span>
+        <span class="version">v0.3.1</span>
       </header>
-
-      <section class="source-bar">
-        <div class="source-summary">
-          <span class="eyebrow">Source</span>
-          <strong id="layer-name">No source captured</strong>
-          <span id="layer-meta">Select a Smart Object in Photopea.</span>
-        </div>
-        <div class="source-actions">
-          <button class="button button-subtle" id="capture-source" type="button">
-            Capture selected
-          </button>
-          <button class="icon-button" id="refresh-projects" type="button" aria-label="Refresh saved warps" title="Refresh saved warps">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M20 7v5h-5M4 17v-5h5" />
-              <path d="M18.5 9A7 7 0 0 0 6 7M5.5 15A7 7 0 0 0 18 17" />
-            </svg>
-          </button>
-        </div>
-      </section>
-
-      <section class="source-bar reference-bar">
-        <div class="source-summary">
-          <span class="eyebrow">Reference</span>
-          <strong id="reference-name">No reference loaded</strong>
-          <span id="reference-meta">Capture the document underneath, or load an image.</span>
-        </div>
-        <div class="source-actions">
-          <button class="button button-subtle" id="capture-reference" type="button">
-            Capture reference
-          </button>
-          <button class="button button-subtle" id="load-reference" type="button">
-            Load image
-          </button>
-          <input id="reference-file" type="file" accept="image/*" hidden />
-        </div>
-      </section>
-
-      <section class="saved-bar is-hidden" id="saved-bar">
-        <label for="saved-projects">Saved warp</label>
-        <select id="saved-projects"></select>
-        <button class="button button-subtle" id="load-project" type="button">Edit</button>
-        <button class="button button-subtle" id="toggle-output" type="button" title="Toggle the warped result and the untouched original">On / off</button>
-      </section>
 
       <section class="workspace-card" id="workspace-card">
         <div class="mode-toolbar" role="toolbar" aria-label="Warp editor controls">
           <div class="segmented" aria-label="Editing mode">
-            <button class="is-active" id="mode-layout" type="button" aria-pressed="true">Layout</button>
-            <button id="mode-warp" type="button" aria-pressed="false">Warp</button>
+            <button class="is-active" id="mode-layout" type="button" aria-pressed="true" title="Layout mode (1) — build the mesh on the source">Layout</button>
+            <button id="mode-warp" type="button" aria-pressed="false" title="Warp mode (2) — move points onto the reference">Warp</button>
           </div>
 
           <div class="segmented" id="layout-tools" aria-label="Layout tools">
-            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Create and bridge mesh faces">Pen</button>
-            <button id="tool-select" type="button" aria-pressed="false" title="Select and move points">Select</button>
+            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Pen tool (P) — create, connect, and bridge faces">Pen</button>
+            <button id="tool-select" type="button" aria-pressed="false" title="Select tool (V) — select and move points">Select</button>
           </div>
 
-          <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Show the live warped image">
+          <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Preview (E) — show the live warped image">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M2.5 12s3.4-5.5 9.5-5.5 9.5 5.5 9.5 5.5-3.4 5.5-9.5 5.5S2.5 12 2.5 12Z" />
               <circle cx="12" cy="12" r="2.8" />
@@ -206,7 +163,7 @@
             Preview
           </button>
 
-          <button class="toolbar-toggle is-active" id="mesh-toggle" type="button" aria-pressed="true" title="Show or hide mesh lines">
+          <button class="toolbar-toggle is-active" id="mesh-toggle" type="button" aria-pressed="true" title="Mesh (M) — show or hide the mesh lines">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="m4 5 8-2 8 3v13l-8 2-8-3Z" />
               <path d="m4 5 8 3 8-2M12 8v13M4 11l8 3 8-2" />
@@ -214,7 +171,7 @@
             Mesh
           </button>
 
-          <button class="toolbar-toggle" id="triangles-toggle" type="button" aria-pressed="false" title="Show triangle split used for warping">
+          <button class="toolbar-toggle" id="triangles-toggle" type="button" aria-pressed="false" title="Triangles (T) — show the triangle split used for warping">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M4 20 12 4l8 16Z" />
               <path d="M12 4v16" />
@@ -222,11 +179,22 @@
             Triangles
           </button>
 
-          <button class="toolbar-toggle" id="focus-toggle" type="button" aria-pressed="false" title="Hide controls and enlarge the editor">
+          <button class="toolbar-toggle" id="connections-toggle" type="button" aria-pressed="false" title="Connections (3) — pull faces apart to show which points are welded together">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="6" cy="6" r="2.4" />
+              <circle cx="18" cy="6" r="2.4" />
+              <circle cx="6" cy="18" r="2.4" />
+              <circle cx="18" cy="18" r="2.4" />
+              <path d="M8.4 6h7.2M6 8.4v7.2" />
+            </svg>
+            Connections
+          </button>
+
+          <button class="toolbar-toggle" id="fullscreen-toggle" type="button" aria-pressed="false" title="Fullscreen (F) — hide the controls and enlarge the editor">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
             </svg>
-            Focus
+            Fullscreen
           </button>
         </div>
 
@@ -244,7 +212,7 @@
         </div>
 
         <div class="editor-footer">
-          <span id="selection-hint">Use Pen to create faces. Select an edge, then click another edge to bridge a gap.</span>
+          <span id="selection-hint">Pen (P): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge.</span>
           <div>
             <button class="text-button" id="undo" type="button" disabled>Undo</button>
             <button class="text-button" id="redo" type="button" disabled>Redo</button>
@@ -252,78 +220,147 @@
         </div>
       </section>
 
-      <section class="controls-card" id="controls-card">
-        <div class="control-row preset-row" id="pen-controls">
-          <label for="insert-mode">Insert</label>
-          <select id="insert-mode">
-            <option value="tri-quad" selected>Tri / Quad</option>
-            <option value="quad-strip">Quad strip</option>
-            <option value="edge">Edge only</option>
-            <option value="vertex">Vertex only</option>
-          </select>
-          <button class="button button-subtle" id="reset-layout" type="button">Reset mesh</button>
-          <button class="button button-subtle" id="delete-selection" type="button">Delete</button>
-        </div>
+      <div class="side-panel" id="side-panel">
+        <section class="source-bar">
+          <div class="source-summary">
+            <span class="eyebrow">Source</span>
+            <strong id="layer-name">No source captured</strong>
+            <span id="layer-meta">Select a Smart Object in Photopea.</span>
+          </div>
+          <div class="source-actions">
+            <button class="button button-subtle" id="capture-source" type="button">
+              Capture selected
+            </button>
+            <button class="button button-subtle" id="clear-source" type="button" title="Discard the captured source and its mesh">
+              Clear
+            </button>
+            <button class="icon-button" id="refresh-projects" type="button" aria-label="Refresh saved warps" title="Refresh saved warps">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 7v5h-5M4 17v-5h5" />
+                <path d="M18.5 9A7 7 0 0 0 6 7M5.5 15A7 7 0 0 0 18 17" />
+              </svg>
+            </button>
+          </div>
+        </section>
 
-        <div class="control-grid">
-          <label>
-            <span>Source opacity</span>
-            <span class="range-with-output">
-              <input id="source-opacity" type="range" min="0" max="100" value="100" />
-              <output id="source-opacity-value">100%</output>
-            </span>
-          </label>
-          <label>
-            <span>Reference opacity</span>
-            <span class="range-with-output">
-              <input id="reference-opacity" type="range" min="0" max="100" value="65" />
-              <output id="reference-opacity-value">65%</output>
-            </span>
-          </label>
-        </div>
+        <section class="source-bar reference-bar">
+          <div class="source-summary">
+            <span class="eyebrow">Reference</span>
+            <strong id="reference-name">No reference loaded</strong>
+            <span id="reference-meta">Select another layer and capture it, or load an image.</span>
+          </div>
+          <div class="source-actions">
+            <button class="button button-subtle" id="capture-reference" type="button">
+              Capture selected
+            </button>
+            <button class="button button-subtle" id="load-reference" type="button">
+              Load image
+            </button>
+            <button class="button button-subtle" id="clear-reference" type="button" title="Remove the reference image">
+              Clear
+            </button>
+            <input id="reference-file" type="file" accept="image/*" hidden />
+          </div>
+        </section>
 
-        <div class="action-row">
-          <button class="button button-subtle" id="reset-warp" type="button">
-            Reset warp
-          </button>
-          <button class="button button-primary" id="create-output" type="button">
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M5 4h11l3 3v13H5zM8 4v6h8V5M8 20v-6h8v6" />
-            </svg>
-            Create output
-          </button>
-        </div>
-      </section>
+        <section class="saved-bar is-hidden" id="saved-bar">
+          <label for="saved-projects">Saved warp</label>
+          <select id="saved-projects"></select>
+          <button class="button button-subtle" id="load-project" type="button">Edit</button>
+          <button class="button button-subtle" id="toggle-output" type="button" title="Toggle the warped result and the untouched original">On / off</button>
+        </section>
 
-      <section class="status-card" id="status-card" aria-live="polite" data-tone="info">
-        <span class="status-dot" aria-hidden="true"></span>
-        <div>
-          <strong id="status-title">Ready</strong>
-          <p id="status-message">Select a Smart Object, then capture it.</p>
-        </div>
-      </section>
+        <section class="controls-card" id="controls-card">
+          <div class="control-row preset-row" id="pen-controls">
+            <label for="insert-mode">Insert</label>
+            <select id="insert-mode">
+              <option value="tri-quad" selected>Tri / Quad</option>
+              <option value="quad-strip">Quad strip</option>
+              <option value="edge">Edge only</option>
+              <option value="vertex">Vertex only</option>
+            </select>
+            <button class="button button-subtle" id="reset-layout" type="button">Reset mesh</button>
+            <button class="button button-subtle" id="delete-selection" type="button" title="Delete the selected points (Delete)">Delete</button>
+          </div>
 
-      <details class="instructions">
-        <summary>How this workflow works</summary>
-        <ol>
-          <li>Select a Smart Object and <strong>Capture selected</strong> (source only).</li>
-          <li>Optionally <strong>Capture reference</strong> or load an alignment image.</li>
-          <li>In <strong>Layout</strong>, use the <strong>Pen</strong> tool like RetopoFlow PolyPen: extrude edges, grow tris/quads, and bridge two edges to fill gaps.</li>
-          <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
-        </ol>
-        <p>
-          Output adds a <strong>UV Warp Result</strong> layer and a hidden <strong>UV Warp Data</strong> layer.
-          The original source stays in the PSD untouched — use <strong>On / off</strong> to show it again,
-          or <strong>Edit</strong> a saved warp to tweak and update the result.
-        </p>
-      </details>
+          <div class="control-grid">
+            <label>
+              <span>Source opacity</span>
+              <span class="range-with-output">
+                <input id="source-opacity" type="range" min="0" max="100" value="100" />
+                <output id="source-opacity-value">100%</output>
+              </span>
+            </label>
+            <label>
+              <span>Reference opacity</span>
+              <span class="range-with-output">
+                <input id="reference-opacity" type="range" min="0" max="100" value="65" />
+                <output id="reference-opacity-value">65%</output>
+              </span>
+            </label>
+          </div>
+
+          <div class="action-row">
+            <button class="button button-subtle" id="reset-warp" type="button">
+              Reset warp
+            </button>
+            <button class="button button-primary" id="create-output" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 4h11l3 3v13H5zM8 4v6h8V5M8 20v-6h8v6" />
+              </svg>
+              Create output
+            </button>
+          </div>
+        </section>
+
+        <section class="status-card" id="status-card" aria-live="polite" data-tone="info">
+          <span class="status-dot" aria-hidden="true"></span>
+          <div>
+            <strong id="status-title">Ready</strong>
+            <p id="status-message">Select a Smart Object, then capture it.</p>
+          </div>
+        </section>
+
+        <details class="instructions">
+          <summary>Hotkeys</summary>
+          <dl class="hotkeys">
+            <div><dt><kbd>1</kbd> / <kbd>2</kbd></dt><dd>Layout / Warp mode</dd></div>
+            <div><dt><kbd>P</kbd></dt><dd>Pen tool</dd></div>
+            <div><dt><kbd>V</kbd></dt><dd>Select tool</dd></div>
+            <div><dt><kbd>E</kbd></dt><dd>Live warp preview</dd></div>
+            <div><dt><kbd>M</kbd></dt><dd>Mesh lines</dd></div>
+            <div><dt><kbd>T</kbd></dt><dd>Triangles</dd></div>
+            <div><dt><kbd>3</kbd></dt><dd>Connections check</dd></div>
+            <div><dt><kbd>F</kbd></dt><dd>Fullscreen</dd></div>
+            <div><dt><kbd>Esc</kbd></dt><dd>Clear selection</dd></div>
+            <div><dt><kbd>Del</kbd></dt><dd>Delete selected points</dd></div>
+            <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Nudge (hold <kbd>Shift</kbd> for 10 px)</dd></div>
+            <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (add <kbd>Shift</kbd> to redo)</dd></div>
+          </dl>
+        </details>
+
+        <details class="instructions">
+          <summary>How this workflow works</summary>
+          <ol>
+            <li>Select a layer and <strong>Capture selected</strong> under Source — only that layer is captured.</li>
+            <li>Optionally select another layer and <strong>Capture selected</strong> under Reference, or load an image.</li>
+            <li>In <strong>Layout</strong>, use the <strong>Pen</strong> tool like RetopoFlow PolyPen: extrude edges, grow tris/quads, and bridge two edges to fill gaps. Click an existing point to weld onto it.</li>
+            <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
+          </ol>
+          <p>
+            Output adds a <strong>UV Warp Result</strong> layer and a hidden <strong>UV Warp Data</strong> layer.
+            The original source stays in the PSD untouched — use <strong>On / off</strong> to show it again,
+            or <strong>Edit</strong> a saved warp to tweak and update the result.
+          </p>
+        </details>
+      </div>
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.3.0 · local processing · no login</span>
+        <span>v0.3.1 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.3.0"></script>
+    <script type="module" src="./installer.js?v=0.3.1"></script>
   </body>
 </html>

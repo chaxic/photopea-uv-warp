@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.1] - 2026-07-27
+
+### Added
+
+- **Connections** toggle (`3`): faces pull apart so you can see which points are welded — green links are shared points, amber marks single-face points and open edges, red rings are loose points.
+- **Clear** buttons for the captured source and the reference.
+- Tool hotkeys: `1`/`2` modes, `P`/`V` tools, `E` preview, `M` mesh, `T` triangles, `3` connections, `F` fullscreen, `Esc` clear selection. A hotkey list is in the panel.
+
+### Changed
+
+- Reference **Capture selected** now captures the layer you have selected in Photopea, isolated the same way as the source, instead of everything underneath it.
+- **Focus** is now **Fullscreen**.
+- The Pen tool welds onto an existing point when you click one, rather than stacking a duplicate point on top of it, and points have a wider catch radius than edges.
+- Selected points are drawn with an amber ring and halo, and the point under the cursor is highlighted.
+
+### Fixed
+
+- The panel no longer overlaps the Source and Reference bars at wide window sizes, which hid the source summary. Both now live in one scrolling sidebar.
+- The editor keeps a usable height at narrow and short window sizes, and the toolbar wraps instead of clipping.
+
 ## [0.3.0] - 2026-07-27
 
 ### Added

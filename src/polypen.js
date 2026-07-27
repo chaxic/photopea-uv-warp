@@ -63,6 +63,30 @@ export function edgeKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+/** How many faces use each undirected edge. Count 1 means an open boundary. */
+export function edgeUsage(faces) {
+  const usage = new Map();
+  for (const face of faces) {
+    const count = face.length;
+    for (let i = 0; i < count; i += 1) {
+      const key = edgeKey(face[i], face[(i + 1) % count]);
+      usage.set(key, (usage.get(key) || 0) + 1);
+    }
+  }
+  return usage;
+}
+
+/** How many faces use each vertex index. Count 0 means a loose point. */
+export function vertexUsage(faces, vertexCount) {
+  const usage = new Array(vertexCount).fill(0);
+  for (const face of faces) {
+    for (const index of face) {
+      if (index >= 0 && index < vertexCount) usage[index] += 1;
+    }
+  }
+  return usage;
+}
+
 function pointOnSegment(point, a, b) {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
@@ -89,6 +113,10 @@ export function snapToMesh(point, vertices, faces, threshold) {
       best = { kind: "vertex", index, point: { ...vertex }, distance: d };
     }
   });
+
+  // A vertex inside the snap radius always wins, even when an edge passes closer.
+  // Welding to an existing point matters more than splitting the edge under it.
+  if (best.kind === "vertex" && best.distance <= threshold) return best;
 
   for (const edge of collectEdges(faces)) {
     const a = vertices[edge[0]];
@@ -365,24 +393,41 @@ export function resolvePenAction({
 }) {
   const snap = snapToMesh(clickPoint, sourceVertices, faces, snapThreshold);
   const point = snap.kind === "none" ? clampPoint(clickPoint) : snap.point;
+  const snappedVertex = snap.kind === "vertex" ? snap.index : null;
+
+  // Two loose points act like an edge so the next click closes a triangle.
+  const activeEdge =
+    selection.edge || (selection.vertices.length === 2 ? [...selection.vertices] : null);
+
+  // Clicking a point of the active edge restarts from that point.
+  if (activeEdge && snappedVertex !== null && activeEdge.includes(snappedVertex)) {
+    return {
+      type: "select-only",
+      vertexIndex: snappedVertex,
+      preview: { kind: "vertex", point: snap.point },
+      hint: "Continue from this point",
+    };
+  }
 
   // Prefer an edge hit that includes open edges (not only face edges).
   const edgeHit =
-    snap.kind === "edge"
-      ? snap
-      : nearestAnyEdge(clickPoint, sourceVertices, faces, snapThreshold, selection.edge ? [selection.edge] : []);
+    snappedVertex !== null
+      ? null
+      : snap.kind === "edge"
+        ? snap
+        : nearestAnyEdge(clickPoint, sourceVertices, faces, snapThreshold, activeEdge ? [activeEdge] : []);
 
   // Bridge: one edge selected + click lands on another edge
-  if (selection.edge && edgeHit && !sameEdge(selection.edge, edgeHit.edge)) {
+  if (activeEdge && edgeHit && !sameEdge(activeEdge, edgeHit.edge)) {
     return {
       type: "bridge",
-      edgeA: [...selection.edge],
+      edgeA: [...activeEdge],
       edgeB: [...edgeHit.edge],
       preview: {
         kind: "quad",
         points: [
-          sourceVertices[selection.edge[0]],
-          sourceVertices[selection.edge[1]],
+          sourceVertices[activeEdge[0]],
+          sourceVertices[activeEdge[1]],
           sourceVertices[edgeHit.edge[1]],
           sourceVertices[edgeHit.edge[0]],
         ],
@@ -393,7 +438,7 @@ export function resolvePenAction({
 
   // Click on existing edge with nothing useful selected → split
   if (
-    (!selection.edge || selection.vertices.length === 0) &&
+    !activeEdge &&
     !selection.face &&
     edgeHit &&
     selection.vertices.length === 0
@@ -418,10 +463,12 @@ export function resolvePenAction({
 
   // Triangle selected → complete to quad
   if (selection.face && selection.face.length === 3) {
+    const reuse = snappedVertex !== null && !selection.face.includes(snappedVertex) ? snappedVertex : null;
     return {
       type: "complete-quad",
       face: [...selection.face],
       point,
+      toExisting: reuse,
       preview: {
         kind: "quad",
         points: [
@@ -431,29 +478,31 @@ export function resolvePenAction({
           point,
         ],
       },
-      hint: "Complete the triangle into a quad",
+      hint: reuse === null
+        ? "Complete the triangle into a quad"
+        : "Complete the quad on the existing point",
     };
   }
 
   // Edge selected
-  if (selection.edge) {
+  if (activeEdge) {
     if (insertMode === "edge") {
       return {
         type: "extrude-edge-open",
-        edge: [...selection.edge],
+        edge: [...activeEdge],
         point,
+        toExisting: snappedVertex,
         preview: {
           kind: "edge",
-          points: [midpoint(sourceVertices[selection.edge[0]], sourceVertices[selection.edge[1]]), point],
+          points: [midpoint(sourceVertices[activeEdge[0]], sourceVertices[activeEdge[1]]), point],
         },
         hint: "Extrude an open edge",
       };
     }
     if (insertMode === "quad-strip") {
       // Parallel edge centered on click, quad between
-      const a = sourceVertices[selection.edge[0]];
-      const b = sourceVertices[selection.edge[1]];
-      const mid = midpoint(a, b);
+      const a = sourceVertices[activeEdge[0]];
+      const b = sourceVertices[activeEdge[1]];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const half = distance(a, b) / 2;
@@ -464,7 +513,7 @@ export function resolvePenAction({
       const d = clampPoint({ x: point.x + ux * half, y: point.y + uy * half });
       return {
         type: "quad-strip",
-        edge: [...selection.edge],
+        edge: [...activeEdge],
         newEdge: [c, d],
         preview: {
           kind: "quad",
@@ -476,13 +525,16 @@ export function resolvePenAction({
     // tri-quad default: triangle from edge to point
     return {
       type: "extrude-triangle",
-      edge: [...selection.edge],
+      edge: [...activeEdge],
       point,
+      toExisting: snappedVertex,
       preview: {
         kind: "triangle",
-        points: [sourceVertices[selection.edge[0]], sourceVertices[selection.edge[1]], point],
+        points: [sourceVertices[activeEdge[0]], sourceVertices[activeEdge[1]], point],
       },
-      hint: "Extrude a triangle from this edge",
+      hint: snappedVertex === null
+        ? "Extrude a triangle from this edge"
+        : "Close a triangle on the existing point",
     };
   }
 
@@ -553,9 +605,13 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       break;
     }
     case "extrude-triangle": {
-      const newIndex = addVertex(nextSource, action.point);
-      addVertex(nextWarp, action.point);
-      const face = [action.edge[0], action.edge[1], newIndex];
+      let tipIndex = action.toExisting;
+      if (tipIndex === null || tipIndex === undefined || action.edge.includes(tipIndex)) {
+        tipIndex = addVertex(nextSource, action.point);
+        addVertex(nextWarp, action.point);
+      }
+      const face = [action.edge[0], action.edge[1], tipIndex];
+      if (new Set(face).size !== 3) throw new Error("That triangle would reuse the same point twice.");
       nextFaces.push(face);
       selectFace = face;
       selectVertices = [...face];
@@ -563,8 +619,11 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       break;
     }
     case "complete-quad": {
-      const newIndex = addVertex(nextSource, action.point);
-      addVertex(nextWarp, action.point);
+      let newIndex = action.toExisting;
+      if (newIndex === null || newIndex === undefined || action.face.includes(newIndex)) {
+        newIndex = addVertex(nextSource, action.point);
+        addVertex(nextWarp, action.point);
+      }
       nextFaces = nextFaces.filter(
         (face) =>
           !(
@@ -617,9 +676,11 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       break;
     }
     case "extrude-edge-open": {
-      const newIndex = addVertex(nextSource, action.point);
-      addVertex(nextWarp, action.point);
-      // Connect both edge ends? For edge-only mode, just add a dangling vertex linked from midpoint conceptually — link from nearest endpoint
+      let newIndex = action.toExisting;
+      if (newIndex === null || newIndex === undefined || action.edge.includes(newIndex)) {
+        newIndex = addVertex(nextSource, action.point);
+        addVertex(nextWarp, action.point);
+      }
       selectEdge = [action.edge[0], newIndex];
       selectVertices = [action.edge[0], newIndex];
       break;

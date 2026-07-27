@@ -35,13 +35,18 @@ const localPlugin = JSON.parse(await readFile(resolve(root, "plugin.local.json")
 
 for (const id of [
   "warp-canvas",
+  "side-panel",
   "capture-source",
+  "clear-source",
   "capture-reference",
   "load-reference",
+  "clear-reference",
   "tool-pen",
   "tool-select",
   "insert-mode",
   "triangles-toggle",
+  "connections-toggle",
+  "fullscreen-toggle",
   "source-opacity",
   "reference-opacity",
   "mode-layout",
@@ -63,7 +68,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.3.0"',
+  'src="./?preview=1&v=0.3.1"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -88,6 +93,9 @@ for (const requirement of [
   "bridgeEdges",
   "beginSourceCapture",
   "beginReferenceCapture",
+  "clearReference",
+  "toggleConnections",
+  "toggleFullscreen",
 ]) {
   if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);
