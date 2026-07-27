@@ -2,13 +2,13 @@
 
 UV Warp is a panel plugin that adds an editable, connected mesh warp workflow to Photopea. It renders the deformation inside the plugin instead of relying on Photopea's scripted Perspective Warp command.
 
-**Current version:** v0.3.1
+**Current version:** v0.3.2
 
-[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.1)
+[Install the current version](https://chaxic.github.io/photopea-uv-warp/?v=0.3.2)
 
 ## Install
 
-1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.1).
+1. Open the [UV Warp installer page](https://chaxic.github.io/photopea-uv-warp/?v=0.3.2).
 2. Download `uv-warp-photopea.json`.
 3. In Photopea, choose **Window → Plugins → Add Plugin**.
 4. Select the downloaded JSON file.
@@ -19,8 +19,8 @@ No Node.js, terminal, login, or backend is required to install or use the plugin
 
 1. Convert the source image to a Smart Object and select it.
 2. Under **Source**, click **Capture selected** — only that layer is captured.
-3. Optionally select another layer and click **Capture selected** under **Reference**, or **Load image**.
-4. In **Layout**, use the **Pen** tool (RetopoFlow PolyPen–style) to grow and bridge mesh faces over the source. Click an existing point to weld onto it.
+3. Optionally select another layer and click **Capture selected** under **Reference**, or **Load image**. Use **Reference tint** if the images look too similar.
+4. In **Layout**, use the **Pen** tool to grow and bridge mesh faces over the source. Click an existing point to weld onto it.
 5. Switch to **Warp**, move matching points onto the reference, and toggle **Preview** / **Triangles** / **Connections**.
 6. Click **Create output** to add the warped result to the PSD.
 
@@ -42,25 +42,31 @@ Use **Clear** under either bar to drop the captured source or reference without 
 | Arrows | Nudge (hold `Shift` for 10 px) |
 | `Ctrl`+`Z` | Undo (add `Shift` to redo) |
 
-The plugin creates:
+## Output layers
 
 ```text
-UV Warp — Source [UVWP:id]
-├─ UV Warp Result [id]
-└─ UV Warp Data [id]  (hidden)
+UV Warp · SourceName [UVWP:id]
+├─ Warped Output [id]              ← the visible result
+└─ Mesh Data — do not edit [id]    ← hidden plugin data
 ```
 
-The original source is hidden, not modified. Use **On / off** to restore it. The hidden data layer stores the mesh so you can **Edit** a saved warp later.
+- **Warped Output** — the warped image. Safe to show, hide, or move within the group.
+- **Mesh Data — do not edit** — stores the mesh so you can reopen this warp. Keep it hidden. Do not edit its text, rename it, or delete it if you want to edit later.
+- Leave the **`[UVWP:id]`** tag in the group name alone — the plugin uses it to find this warp.
+- Your original source layer is only hidden, not changed. Use **On / off** to switch between the warped result and the original.
+
+**To edit a finished warp:** open the panel → pick it under **Saved warp** → **Edit** → adjust Layout/Warp → **Create output** again. That updates the Warped Output in place.
 
 ## Features
 
 - Separate Layout and Warp modes
-- PolyPen-style contextual mesh creation and edge bridging
+- Contextual Pen mesh creation and edge bridging
 - Live piecewise-affine preview
 - Shared draggable vertices and Shift multi-selection
 - Arrow-key nudging; Shift + arrow for 10 px
 - Undo and redo inside the editor
 - Independent source and reference opacity
+- Reference tint overlay with an editable color swatch
 - Triangles overlay for warp diagnostics
 - Connection check that pulls faces apart to reveal unwelded points
 - Fullscreen mode for a larger canvas

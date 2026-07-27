@@ -71,6 +71,8 @@ const elements = {
   sourceOpacityValue: document.querySelector("#source-opacity-value"),
   referenceOpacity: document.querySelector("#reference-opacity"),
   referenceOpacityValue: document.querySelector("#reference-opacity-value"),
+  referenceTintToggle: document.querySelector("#reference-tint-toggle"),
+  referenceTintColor: document.querySelector("#reference-tint-color"),
   resetLayout: document.querySelector("#reset-layout"),
   resetWarp: document.querySelector("#reset-warp"),
   createOutput: document.querySelector("#create-output"),
@@ -88,6 +90,7 @@ const state = {
   trianglesVisible: false,
   connectionsVisible: false,
   fullscreen: false,
+  referenceTint: false,
   busy: false,
   project: null,
   captureMeta: null,
@@ -158,13 +161,22 @@ function setProjectReady(ready) {
     elements.trianglesToggle, elements.connectionsToggle, elements.fullscreenToggle,
     elements.toolPen, elements.toolSelect,
     elements.insertMode, elements.deleteSelection, elements.sourceOpacity,
-    elements.referenceOpacity, elements.resetLayout, elements.resetWarp, elements.createOutput,
+    elements.referenceOpacity, elements.referenceTintToggle, elements.referenceTintColor,
+    elements.resetLayout, elements.resetWarp, elements.createOutput,
     elements.clearSource, elements.captureReference, elements.loadReference,
   ]) {
     element.disabled = !ready || state.busy;
   }
   elements.referenceFile.disabled = !ready || state.busy;
   elements.clearReference.disabled = !ready || state.busy || !state.backdropImage;
+  syncReferenceTintControls();
+}
+
+function syncReferenceTintControls() {
+  const enabled = Boolean(state.project) && !state.busy;
+  elements.referenceTintToggle.disabled = !enabled;
+  elements.referenceTintColor.disabled = !enabled || !state.referenceTint;
+  setToggle(elements.referenceTintToggle, state.referenceTint);
 }
 
 function setReferenceSummary(name, meta) {
@@ -394,6 +406,42 @@ function drawImageCrop(context, image, metrics, opacity) {
   context.restore();
 }
 
+function drawReferenceLayer(context, metrics) {
+  if (!state.backdropImage) return;
+  const opacity = Number(elements.referenceOpacity.value) / 100;
+  if (opacity <= 0) return;
+  if (!state.referenceTint) {
+    drawImageCrop(context, state.backdropImage, metrics, opacity);
+    return;
+  }
+  const width = Math.max(1, Math.round(metrics.drawWidth));
+  const height = Math.max(1, Math.round(metrics.drawHeight));
+  const offscreen = drawReferenceLayer.offscreen || (drawReferenceLayer.offscreen = document.createElement("canvas"));
+  if (offscreen.width !== width || offscreen.height !== height) {
+    offscreen.width = width;
+    offscreen.height = height;
+  }
+  const tint = offscreen.getContext("2d");
+  tint.setTransform(1, 0, 0, 1, 0, 0);
+  tint.clearRect(0, 0, width, height);
+  tint.drawImage(
+    state.backdropImage,
+    0, 0, state.backdropImage.naturalWidth, state.backdropImage.naturalHeight,
+    0, 0, width, height,
+  );
+  tint.globalCompositeOperation = "source-atop";
+  tint.fillStyle = elements.referenceTintColor.value || "#ff4d6d";
+  tint.fillRect(0, 0, width, height);
+  tint.globalCompositeOperation = "source-over";
+  context.save();
+  context.globalAlpha = opacity;
+  context.beginPath();
+  context.rect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
+  context.clip();
+  context.drawImage(offscreen, metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
+  context.restore();
+}
+
 function drawLiveWarp(context, metrics) {
   const mesh = state.project.mesh;
   const sourceVertices = mesh.sourceVertices.map((point) => ({
@@ -592,7 +640,7 @@ function render() {
   if (!state.project || !state.sourceImage) return;
   context.fillStyle = "#0d0f12";
   context.fillRect(metrics.x, metrics.y, metrics.drawWidth, metrics.drawHeight);
-  drawImageCrop(context, state.backdropImage, metrics, Number(elements.referenceOpacity.value) / 100);
+  drawReferenceLayer(context, metrics);
   if (state.mode === "layout" || !state.preview) {
     drawImageCrop(context, state.sourceImage, metrics, Number(elements.sourceOpacity.value) / 100);
   } else {
@@ -932,25 +980,32 @@ function randomProjectId() {
 }
 
 function safeLayerLabel(value) {
-  return String(value || "Layer").replace(/[\r\n[\]]+/g, " ").trim().slice(0, 54);
+  return String(value || "Layer").replace(/[\r\n[\]]+/g, " ").trim().slice(0, 48);
+}
+
+function makeOutputNames(layerName, projectId) {
+  const shortId = String(projectId || "").replace(/^uvwp-/, "").slice(-8) || "warp";
+  const label = safeLayerLabel(layerName);
+  return {
+    groupName: `UV Warp · ${label} [UVWP:${shortId}]`,
+    resultName: `Warped Output [${shortId}]`,
+    dataLayerName: `Mesh Data — do not edit [${shortId}]`,
+  };
 }
 
 function projectFromCapture() {
   const projectId = randomProjectId();
-  const shortId = projectId.replace(/^uvwp-/, "").slice(-8);
   return {
     schemaVersion: 2,
     projectId,
     source: { ...state.captureMeta },
     mesh: seedQuadMesh(normalizedSourceBounds()),
-    output: {
-      groupName: `UV Warp — ${safeLayerLabel(state.captureMeta.layerName)} [UVWP:${shortId}]`,
-      resultName: `UV Warp Result [${shortId}]`,
-      dataLayerName: `UV Warp Data [${shortId}]`,
-    },
+    output: makeOutputNames(state.captureMeta.layerName, projectId),
     view: {
       sourceOpacity: Number(elements.sourceOpacity.value),
       referenceOpacity: Number(elements.referenceOpacity.value),
+      referenceTint: state.referenceTint,
+      referenceTintColor: elements.referenceTintColor.value || "#ff4d6d",
       insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
@@ -962,6 +1017,9 @@ function normalizeLoadedProject(project) {
     throw new Error("This saved UV Warp uses an unsupported data format.");
   }
   validateProjectMesh(project.mesh);
+  const tintColor = /^#[0-9a-fA-F]{6}$/.test(project.view?.referenceTintColor)
+    ? project.view.referenceTintColor
+    : "#ff4d6d";
   return {
     ...project,
     schemaVersion: 2,
@@ -976,6 +1034,8 @@ function normalizeLoadedProject(project) {
     view: {
       sourceOpacity: clamp(Number(project.view?.sourceOpacity) || 100, 0, 100),
       referenceOpacity: clamp(Number(project.view?.referenceOpacity) || 65, 0, 100),
+      referenceTint: Boolean(project.view?.referenceTint),
+      referenceTintColor: tintColor,
       insertMode: project.view?.insertMode || "tri-quad",
     },
   };
@@ -1082,6 +1142,8 @@ async function finishSourceCapture(session) {
     state.pendingSavedProject = null;
     elements.sourceOpacity.value = String(state.project.view.sourceOpacity);
     elements.referenceOpacity.value = String(state.project.view.referenceOpacity);
+    elements.referenceTintColor.value = state.project.view.referenceTintColor || "#ff4d6d";
+    state.referenceTint = Boolean(state.project.view.referenceTint);
     elements.insertMode.value = state.project.view.insertMode;
     state.insertMode = elements.insertMode.value;
     setMode("warp");
@@ -1232,6 +1294,8 @@ function serializeProject() {
     view: {
       sourceOpacity: Number(elements.sourceOpacity.value),
       referenceOpacity: Number(elements.referenceOpacity.value),
+      referenceTint: state.referenceTint,
+      referenceTintColor: elements.referenceTintColor.value || "#ff4d6d",
       insertMode: state.insertMode,
     },
     updatedAt: new Date().toISOString(),
@@ -1398,7 +1462,8 @@ async function handlePhotopeaResponse(event) {
   if (message.type === "output-result") {
     setBusy(false);
     if (message.ok) {
-      setStatus("success", "Output created", "The warped result and editable mesh data are saved in the PSD.");
+      setStatus("success", "Output created",
+        `Added “${state.project.output.resultName}”. Mesh data is hidden — do not edit or delete it if you want to reopen this warp later.`);
       scanSavedWarps();
     } else setStatus("error", "Photopea could not add the output", message.message);
     return;
@@ -1448,6 +1513,12 @@ elements.insertMode.addEventListener("change", () => { state.insertMode = elemen
 for (const [input, output] of [[elements.sourceOpacity, elements.sourceOpacityValue], [elements.referenceOpacity, elements.referenceOpacityValue]]) {
   input.addEventListener("input", () => { output.textContent = `${input.value}%`; scheduleRender(); });
 }
+elements.referenceTintToggle.addEventListener("click", () => {
+  state.referenceTint = !state.referenceTint;
+  syncReferenceTintControls();
+  scheduleRender();
+});
+elements.referenceTintColor.addEventListener("input", () => scheduleRender());
 elements.resetLayout.addEventListener("click", resetLayout);
 elements.resetWarp.addEventListener("click", resetWarp);
 elements.deleteSelection.addEventListener("click", deleteSelection);
@@ -1479,6 +1550,7 @@ setToggle(elements.trianglesToggle, state.trianglesVisible);
 setToggle(elements.connectionsToggle, state.connectionsVisible);
 setToggle(elements.fullscreenToggle, state.fullscreen);
 setToggle(elements.toolPen, true);
+syncReferenceTintControls();
 setProjectReady(false);
 updateHistoryButtons();
 scheduleRender();

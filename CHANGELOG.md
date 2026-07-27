@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.2] - 2026-07-27
+
+### Added
+
+- **Reference tint** overlay toggle with an editable color swatch so the reference can contrast against the source.
+- Panel section **Output layers & editing later** explaining what each layer is for and how to reopen a finished warp.
+
+### Changed
+
+- Workflow copy no longer mentions RetopoFlow / PolyPen.
+- New outputs use clearer layer names: `UV Warp · … [UVWP:id]`, `Warped Output [id]`, and `Mesh Data — do not edit [id]`. Existing saved warps keep their previous names so updates still find them.
+
 ## [0.3.1] - 2026-07-27
 
 ### Added

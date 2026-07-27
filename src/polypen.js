@@ -1,6 +1,6 @@
 /**
- * PolyPen-style contextual mesh creation for 2D UV layout.
- * Inspired by RetopoFlow PolyPen (tri/quad extrude + edge bridging).
+ * Contextual mesh creation for 2D UV layout.
+ * Builds triangles and quads by extruding edges and bridging gaps.
  */
 
 const EPSILON = 1e-8;

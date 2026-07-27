@@ -49,6 +49,8 @@ for (const id of [
   "fullscreen-toggle",
   "source-opacity",
   "reference-opacity",
+  "reference-tint-toggle",
+  "reference-tint-color",
   "mode-layout",
   "mode-warp",
   "preview-toggle",
@@ -68,7 +70,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.3.1"',
+  'src="./?preview=1&v=0.3.2"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -96,6 +98,8 @@ for (const requirement of [
   "clearReference",
   "toggleConnections",
   "toggleFullscreen",
+  "drawReferenceLayer",
+  "makeOutputNames",
 ]) {
   if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);
