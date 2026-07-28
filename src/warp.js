@@ -46,10 +46,17 @@ export function solveAffineTransform(source, target) {
 export function triangulateQuads(quads) {
   return quads.flatMap((face) => {
     if (face.length === 3) return [face];
-    return [
-      [face[0], face[1], face[2]],
-      [face[0], face[2], face[3]],
-    ];
+    if (face.length === 4) {
+      return [
+        [face[0], face[1], face[2]],
+        [face[0], face[2], face[3]],
+      ];
+    }
+    const tris = [];
+    for (let i = 1; i < face.length - 1; i += 1) {
+      tris.push([face[0], face[i], face[i + 1]]);
+    }
+    return tris;
   });
 }
 

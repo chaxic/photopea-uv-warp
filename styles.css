@@ -310,6 +310,31 @@ button:disabled {
   background: #15171b;
 }
 
+.tool-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: auto;
+}
+
+.tool-cluster .segmented {
+  margin-right: 0;
+}
+
+.segmented-sub {
+  border-style: dashed;
+}
+
+.segmented-sub button {
+  min-width: 48px;
+  font-size: 11px;
+}
+
+.segmented button.is-temp {
+  outline: 1px solid rgba(255, 209, 102, 0.85);
+  outline-offset: 0;
+}
+
 .segmented button {
   min-width: 58px;
   min-height: 26px;
@@ -400,6 +425,10 @@ button:disabled {
 
 #warp-canvas.is-panning {
   cursor: grabbing;
+}
+
+#warp-canvas.is-marquee {
+  cursor: crosshair;
 }
 
 .empty-state {

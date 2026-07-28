@@ -1,6 +1,6 @@
 {
   "name": "photopea-uv-warp",
-  "version": "0.3.8",
+  "version": "0.3.13",
   "private": true,
   "type": "module",
   "description": "A non-destructive, editable UV-style mesh warp panel for Photopea.",

@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.3.13] - 2026-07-28
+
+### Fixed
+
+- Holding **Ctrl** while drawing now switches the Line/Face toggle UI to Line (with a temporary highlight) and restores Face when released.
+- Line/Face controls sit in a cluster immediately beside Draw/Select.
+
+## [0.3.12] - 2026-07-28
+
+### Added
+
+- **Face / Line** draw modes: Face (default) auto-creates triangles/quads when drawn edges close a loop; Line keeps knife-only cuts. Hold **Ctrl** while drawing for temporary Line mode.
+- **Select** can click a face; **Del** removes the face and keeps its points and lines.
+- Marquee drag in Select mode to box-select points (Shift adds to the selection).
+
+### Fixed
+
+- Closing three edges into a triangle now creates a face in Face mode.
+
+## [0.3.11] - 2026-07-28
+
+### Fixed
+
+- Draw hover now shows the yellow point indicator on the target edge when drawing/cutting from a selected point (not only when inserting a point with nothing selected).
+
+## [0.3.10] - 2026-07-28
+
+### Added
+
+- Mesh stores drawable `edges` so knife cuts and open lines persist independently of faces.
+
+### Changed
+
+- **Draw**: clicking a line with nothing selected inserts a point only (no auto-connect).
+- **Draw**: with a point selected, clicking draws/cuts along that path; faces split only along the cut (no auto-diagonals).
+- **Select**: clicking a line selects the line alone (not both endpoints).
+- **Delete**: with a line selected, removes that line and keeps its endpoints.
+
+## [0.3.9] - 2026-07-28
+
+### Changed
+
+- **Draw** tool: clicking a line inserts a point on it (instead of only selecting the line).
+- Drawing from a selected point connects with a line; crossings with existing lines become weld points.
+- Selecting a point and clicking a line both inserts the point and connects to it.
+
 ## [0.3.8] - 2026-07-28
 
 ### Changed

@@ -63,6 +63,65 @@ export function edgeKey(a, b) {
   return a < b ? `${a}:${b}` : `${b}:${a}`;
 }
 
+export function normalizeEdgeList(edges = []) {
+  const unique = [];
+  const seen = new Set();
+  for (const edge of edges) {
+    if (!Array.isArray(edge) || edge.length !== 2) continue;
+    const a = edge[0];
+    const b = edge[1];
+    if (!Number.isInteger(a) || !Number.isInteger(b) || a === b) continue;
+    const key = edgeKey(a, b);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(a < b ? [a, b] : [b, a]);
+  }
+  return unique;
+}
+
+export function hasEdge(edges, a, b) {
+  const key = edgeKey(a, b);
+  return edges.some((edge) => edgeKey(edge[0], edge[1]) === key);
+}
+
+export function addEdge(edges, a, b) {
+  if (a === b) return edges;
+  if (hasEdge(edges, a, b)) return edges;
+  return [...edges, a < b ? [a, b] : [b, a]];
+}
+
+export function removeEdgeFromList(edges, a, b) {
+  const key = edgeKey(a, b);
+  return edges.filter((edge) => edgeKey(edge[0], edge[1]) !== key);
+}
+
+/** Prefer stored drawable edges; fall back to face boundaries. */
+export function ensureEdges(faces, edges) {
+  if (Array.isArray(edges) && edges.length > 0) return normalizeEdgeList(edges);
+  return collectEdges(faces);
+}
+
+/** Union of face boundaries and stored edges for hit-testing. */
+export function drawableEdges(faces, edges) {
+  return normalizeEdgeList([...collectEdges(faces), ...(edges || [])]);
+}
+
+export function edgesFromFace(face) {
+  const result = [];
+  for (let i = 0; i < face.length; i += 1) {
+    result.push([face[i], face[(i + 1) % face.length]]);
+  }
+  return result;
+}
+
+export function remapEdges(edges, vertexIndex) {
+  return normalizeEdgeList(
+    edges
+      .filter((edge) => !edge.includes(vertexIndex))
+      .map((edge) => edge.map((index) => (index > vertexIndex ? index - 1 : index))),
+  );
+}
+
 /** How many faces use each undirected edge. Count 1 means an open boundary. */
 export function edgeUsage(faces) {
   const usage = new Map();
@@ -104,7 +163,7 @@ function pointOnSegment(point, a, b) {
  * Snap a document-space point to nearby vertices or edges.
  * @returns {{ kind: 'vertex'|'edge'|'none', index?: number, edge?: number[], point: {x,y}, distance: number }}
  */
-export function snapToMesh(point, vertices, faces, threshold) {
+export function snapToMesh(point, vertices, faces, threshold, edges = null) {
   let best = { kind: "none", point: { ...point }, distance: Infinity };
 
   vertices.forEach((vertex, index) => {
@@ -118,7 +177,7 @@ export function snapToMesh(point, vertices, faces, threshold) {
   // Welding to an existing point matters more than splitting the edge under it.
   if (best.kind === "vertex" && best.distance <= threshold) return best;
 
-  for (const edge of collectEdges(faces)) {
+  for (const edge of drawableEdges(faces, edges)) {
     const a = vertices[edge[0]];
     const b = vertices[edge[1]];
     const projected = pointOnSegment(point, a, b);
@@ -150,18 +209,8 @@ export function nearestVertex(point, vertices, threshold) {
   return best;
 }
 
-export function nearestEdge(point, vertices, faces, threshold) {
-  let best = null;
-  let bestDistance = threshold;
-  const edges = collectEdges(faces);
-  for (const edge of edges) {
-    const projected = pointOnSegment(point, vertices[edge[0]], vertices[edge[1]]);
-    if (projected.distance <= bestDistance) {
-      bestDistance = projected.distance;
-      best = { edge: [...edge], point: projected.point, t: projected.t, distance: projected.distance };
-    }
-  }
-  return best;
+export function nearestEdge(point, vertices, faces, threshold, edges = null) {
+  return nearestEdgeFromList(point, vertices, drawableEdges(faces, edges), threshold);
 }
 
 /** Nearest segment among an explicit edge list (includes open edges not yet in faces). */
@@ -216,86 +265,76 @@ function sameEdge(a, b) {
 }
 
 /**
- * Insert a vertex on an edge and split adjacent faces.
- * Mutates copies — returns new mesh arrays.
+ * Proper intersection of segments AB and CD, excluding near-endpoint touches.
+ * Returns { point, t } where t is the parameter along AB, or null.
  */
-export function insertVertexOnEdge(sourceVertices, warpVertices, faces, edge, point) {
-  const nextSource = sourceVertices.map((p) => ({ ...p }));
-  const nextWarp = warpVertices.map((p) => ({ ...p }));
-  const newIndex = addVertex(nextSource, point);
-  addVertex(nextWarp, point);
-
-  const nextFaces = [];
-  for (const face of faces) {
-    const count = face.length;
-    let splitAt = -1;
-    for (let i = 0; i < count; i += 1) {
-      const u = face[i];
-      const v = face[(i + 1) % count];
-      if (sameEdge([u, v], edge)) {
-        splitAt = i;
-        break;
-      }
-    }
-    if (splitAt < 0) {
-      nextFaces.push([...face]);
-      continue;
-    }
-    // Replace edge u-v with u-new-v
-    const rebuilt = [];
-    for (let i = 0; i < count; i += 1) {
-      rebuilt.push(face[i]);
-      if (i === splitAt) rebuilt.push(newIndex);
-    }
-    // Split n-gon into triangle fan or two faces for quads
-    if (rebuilt.length === 4) {
-      nextFaces.push(rebuilt);
-    } else if (rebuilt.length === 5) {
-      // Quad that gained a midpoint → two quads sharing the new vertex
-      // Original quad ABCD with split on AB → A N B C D
-      // Faces: A N C D and N B C (if we had triangle) — for quad A-B-C-D split on A-B:
-      // verts: A, N, B, C, D → faces [A,N,C,D] wait that's wrong.
-      // Correct: [A, N, B, C] no — original was A-B-C-D.
-      // After insert on A-B: A-N-B-C-D. Split into quads [A,N,C,D] and [N,B,C] — triangle.
-      // Better: [A, N, C, D] only if C is opposite... Standard: [A,N,B,C] is wrong length.
-      // For quad A-B-C-D with mid M on A-B: faces [A,M,C,D] is invalid (skips B).
-      // Correct split: [A, M, D] + [M, B, C, D] or [A, M, B, C] + [A, C, D] 
-      // Standard edge split for quad: [A, M, C, D] NO.
-      // Quad A-B-C-D, edge A-B: result faces [A, M, B, D]? No D not adjacent to B via that.
-      // Correct: [A, M, D] triangle and [M, B, C, D] quad — or both quads if we add diagonal.
-      // Simplest valid: [A, M, B, C] wait C not next to B from A... 
-      // Face winding A→B→C→D. Insert M on A→B: A→M→B→C→D.
-      // Split into: A→M→C→D and M→B→C (triangle) — or A→M→B→C and A→C→D (tri).
-      // Prefer two faces: [A, M, C, D] is wrong topology.
-      // Use: [A, M, B, C] — that's A-M-B-C which includes wrong edge M-C skipping?
-      // Actually for retopo: [A,M,D] and [M,B,C,D]:
-      nextFaces.push([rebuilt[0], rebuilt[1], rebuilt[4]]); // A, M, D if D is last
-      // rebuilt = [A, N, B, C, D] indices 0,1,2,3,4
-      nextFaces.pop();
-      nextFaces.push([rebuilt[0], rebuilt[1], rebuilt[4]]); // A N D
-      nextFaces.push([rebuilt[1], rebuilt[2], rebuilt[3], rebuilt[4]]); // N B C D
-    } else {
-      nextFaces.push(rebuilt);
-    }
-  }
-
+export function segmentIntersection(a, b, c, d, endpointEpsilon = 1e-4) {
+  const bx = b.x - a.x;
+  const by = b.y - a.y;
+  const dx = d.x - c.x;
+  const dy = d.y - c.y;
+  const denom = bx * dy - by * dx;
+  if (Math.abs(denom) < EPSILON) return null;
+  const t = ((c.x - a.x) * dy - (c.y - a.y) * dx) / denom;
+  const u = ((c.x - a.x) * by - (c.y - a.y) * bx) / denom;
+  if (t <= endpointEpsilon || t >= 1 - endpointEpsilon) return null;
+  if (u <= endpointEpsilon || u >= 1 - endpointEpsilon) return null;
   return {
-    sourceVertices: nextSource,
-    warpVertices: nextWarp,
-    faces: nextFaces,
-    newVertexIndex: newIndex,
+    t,
+    point: clampPoint({ x: a.x + bx * t, y: a.y + by * t }),
   };
 }
 
-/** Fix insertVertexOnEdge for clean quad split. */
-export function splitEdge(sourceVertices, warpVertices, faces, edge, atPoint) {
+/**
+ * Intersections of segment from→to with face edges, sorted along the segment.
+ * Skips edges that share an endpoint with fromIndex / toIndex.
+ */
+export function findSegmentEdgeIntersections(fromIndex, toIndex, fromPoint, toPoint, vertices, faces, edges = null) {
+  const hits = [];
+  const seen = new Set();
+  for (const edge of drawableEdges(faces, edges)) {
+    if (edge.includes(fromIndex) || (toIndex !== null && edge.includes(toIndex))) continue;
+    const key = edgeKey(edge[0], edge[1]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const hit = segmentIntersection(fromPoint, toPoint, vertices[edge[0]], vertices[edge[1]]);
+    if (!hit) continue;
+    hits.push({
+      edge: [...edge],
+      point: hit.point,
+      t: hit.t,
+    });
+  }
+  hits.sort((left, right) => left.t - right.t);
+  return hits;
+}
+
+/** Find a current drawable edge that still contains the given point (after prior splits). */
+function findEdgeAtPoint(point, vertices, faces, edges = null, threshold = 1e-5) {
+  let best = null;
+  let bestDistance = threshold;
+  for (const edge of drawableEdges(faces, edges)) {
+    const projected = pointOnSegment(point, vertices[edge[0]], vertices[edge[1]]);
+    if (projected.distance <= bestDistance) {
+      bestDistance = projected.distance;
+      best = { edge: [...edge], point: projected.point };
+    }
+  }
+  return best;
+}
+
+/**
+ * Insert a vertex on an edge without auto-diagonals.
+ * Updates face cycles in place (n-gons allowed) and replaces the edge in the edge list.
+ */
+export function splitEdge(sourceVertices, warpVertices, faces, edge, atPoint, edges = null) {
   const nextSource = sourceVertices.map((p) => ({ ...p }));
   const nextWarp = warpVertices.map((p) => ({ ...p }));
-  const newIndex = addVertex(nextSource, atPoint || midpoint(sourceVertices[edge[0]], sourceVertices[edge[1]]));
-  addVertex(nextWarp, atPoint || midpoint(warpVertices[edge[0]], warpVertices[edge[1]]));
+  const point = atPoint || midpoint(sourceVertices[edge[0]], sourceVertices[edge[1]]);
+  const newIndex = addVertex(nextSource, point);
+  addVertex(nextWarp, atPoint ? point : midpoint(warpVertices[edge[0]], warpVertices[edge[1]]));
 
-  const nextFaces = [];
-  for (const face of faces) {
+  const nextFaces = faces.map((face) => {
     const count = face.length;
     let edgeIndex = -1;
     for (let i = 0; i < count; i += 1) {
@@ -304,45 +343,380 @@ export function splitEdge(sourceVertices, warpVertices, faces, edge, atPoint) {
         break;
       }
     }
-    if (edgeIndex < 0) {
-      nextFaces.push([...face]);
-      continue;
+    if (edgeIndex < 0) return [...face];
+    const rebuilt = [];
+    for (let i = 0; i < count; i += 1) {
+      rebuilt.push(face[i]);
+      if (i === edgeIndex) rebuilt.push(newIndex);
     }
+    return rebuilt;
+  });
 
-    if (count === 3) {
-      const a = face[edgeIndex];
-      const b = face[(edgeIndex + 1) % 3];
-      const c = face[(edgeIndex + 2) % 3];
-      nextFaces.push([a, newIndex, c]);
-      nextFaces.push([newIndex, b, c]);
-      continue;
+  let nextEdges = ensureEdges(faces, edges);
+  nextEdges = removeEdgeFromList(nextEdges, edge[0], edge[1]);
+  nextEdges = addEdge(nextEdges, edge[0], newIndex);
+  nextEdges = addEdge(nextEdges, newIndex, edge[1]);
+
+  return {
+    sourceVertices: nextSource,
+    warpVertices: nextWarp,
+    faces: nextFaces,
+    edges: nextEdges,
+    newVertexIndex: newIndex,
+  };
+}
+
+/** @deprecated Use splitEdge — kept as an alias. */
+export function insertVertexOnEdge(sourceVertices, warpVertices, faces, edge, point, edges = null) {
+  return splitEdge(sourceVertices, warpVertices, faces, edge, point, edges);
+}
+
+/**
+ * Split a face along chord u–v when both lie on the face and are not already adjacent.
+ * Returns two faces, or null if the chord cannot split this face.
+ */
+export function splitFaceAlongChord(face, u, v) {
+  const ui = face.indexOf(u);
+  const vi = face.indexOf(v);
+  if (ui < 0 || vi < 0 || ui === vi) return null;
+  const n = face.length;
+  if ((ui + 1) % n === vi || (vi + 1) % n === ui) return null;
+
+  const face1 = [];
+  for (let i = ui; ; i = (i + 1) % n) {
+    face1.push(face[i]);
+    if (i === vi) break;
+  }
+  const face2 = [];
+  for (let i = vi; ; i = (i + 1) % n) {
+    face2.push(face[i]);
+    if (i === ui) break;
+  }
+  if (face1.length < 3 || face2.length < 3) return null;
+  return [face1, face2];
+}
+
+/** Apply a cut chord to every face that can be split by it; add the chord to edges. */
+export function knifeCutChord(faces, edges, u, v) {
+  let nextEdges = addEdge(edges, u, v);
+  const nextFaces = [];
+  for (const face of faces) {
+    const split = splitFaceAlongChord(face, u, v);
+    if (split) nextFaces.push(...split);
+    else nextFaces.push([...face]);
+  }
+  return { faces: nextFaces, edges: nextEdges };
+}
+
+/**
+ * Knife-connect from→to: insert verts at crossings, persist path edges, split faces along the cut only.
+ */
+export function knifeConnect(
+  sourceVertices,
+  warpVertices,
+  faces,
+  edges,
+  fromIndex,
+  toPoint,
+  toExisting = null,
+) {
+  let nextSource = sourceVertices.map((point) => ({ ...point }));
+  let nextWarp = warpVertices.map((point) => ({ ...point }));
+  let nextFaces = faces.map((face) => [...face]);
+  let nextEdges = ensureEdges(faces, edges);
+
+  let toIndex = toExisting;
+  if (toIndex === null || toIndex === undefined || toIndex === fromIndex) {
+    toIndex = addVertex(nextSource, toPoint);
+    addVertex(nextWarp, toPoint);
+  }
+
+  const hits = findSegmentEdgeIntersections(
+    fromIndex,
+    toIndex,
+    nextSource[fromIndex],
+    nextSource[toIndex],
+    nextSource,
+    nextFaces,
+    nextEdges,
+  );
+
+  const path = [fromIndex];
+  for (const hit of hits) {
+    const current = findEdgeAtPoint(hit.point, nextSource, nextFaces, nextEdges, 1e-4);
+    if (!current) continue;
+    if (current.edge.includes(fromIndex) || current.edge.includes(toIndex)) continue;
+    if (path.includes(current.edge[0]) && path.includes(current.edge[1])) continue;
+    const split = splitEdge(nextSource, nextWarp, nextFaces, current.edge, current.point, nextEdges);
+    nextSource = split.sourceVertices;
+    nextWarp = split.warpVertices;
+    nextFaces = split.faces;
+    nextEdges = split.edges;
+    path.push(split.newVertexIndex);
+  }
+  path.push(toIndex);
+
+  const uniquePath = [];
+  for (const index of path) {
+    if (uniquePath.length === 0 || uniquePath[uniquePath.length - 1] !== index) {
+      uniquePath.push(index);
     }
+  }
 
-    // Quad: split into two quads sharing the new mid-edge vertex and the opposite diagonal
-    const a = face[edgeIndex];
-    const b = face[(edgeIndex + 1) % 4];
-    const c = face[(edgeIndex + 2) % 4];
-    const d = face[(edgeIndex + 3) % 4];
-    nextFaces.push([a, newIndex, c, d]);
-    nextFaces.push([newIndex, b, c]);
-    // Prefer two quads: [a, new, d] is tri; better [a, newIndex, b, c] no.
-    // Correct two-quad split of ABCD with M on AB: [A,M,C,D] is invalid.
-    // [A, M, D] + [M, B, C, D]:
-    nextFaces.pop();
-    nextFaces.pop();
-    nextFaces.push([a, newIndex, d]);
-    nextFaces.push([newIndex, b, c, d]);
+  for (let i = 0; i < uniquePath.length - 1; i += 1) {
+    const cut = knifeCutChord(nextFaces, nextEdges, uniquePath[i], uniquePath[i + 1]);
+    nextFaces = cut.faces;
+    nextEdges = cut.edges;
   }
 
   return {
     sourceVertices: nextSource,
     warpVertices: nextWarp,
     faces: nextFaces,
-    newVertexIndex: newIndex,
+    edges: nextEdges,
+    toIndex,
+    path: uniquePath,
   };
 }
 
-export function bridgeEdges(sourceVertices, warpVertices, faces, edgeA, edgeB) {
+/**
+ * Split every face edge crossed by from→to, then return the updated mesh and endpoint index.
+ * Knife-style: persists cut edges and splits faces along the cut only (no auto-diagonals).
+ */
+export function connectAcrossIntersections(
+  sourceVertices,
+  warpVertices,
+  faces,
+  fromIndex,
+  toPoint,
+  toExisting = null,
+  edges = null,
+) {
+  return knifeConnect(sourceVertices, warpVertices, faces, edges, fromIndex, toPoint, toExisting);
+}
+
+/**
+ * Remove an undirected edge. Dissolves faces that used it as a boundary; keeps endpoints.
+ */
+export function deleteEdge(sourceVertices, warpVertices, faces, edges, edge) {
+  const nextEdges = removeEdgeFromList(ensureEdges(faces, edges), edge[0], edge[1]);
+  const nextFaces = faces.filter((face) => {
+    const count = face.length;
+    for (let i = 0; i < count; i += 1) {
+      if (sameEdge([face[i], face[(i + 1) % count]], edge)) return false;
+    }
+    return true;
+  });
+  let merged = nextEdges;
+  for (const face of nextFaces) {
+    for (const faceEdge of edgesFromFace(face)) {
+      merged = addEdge(merged, faceEdge[0], faceEdge[1]);
+    }
+  }
+  return {
+    sourceVertices: sourceVertices.map((p) => ({ ...p })),
+    warpVertices: warpVertices.map((p) => ({ ...p })),
+    faces: nextFaces.map((f) => [...f]),
+    edges: merged,
+  };
+}
+
+/** Canonical undirected face key (rotation + reflection invariant). */
+export function faceKey(face) {
+  const n = face.length;
+  let best = null;
+  for (const dir of [1, -1]) {
+    for (let start = 0; start < n; start += 1) {
+      const ordered = [];
+      for (let i = 0; i < n; i += 1) {
+        const index = dir === 1 ? (start + i) % n : (start - i + n * 8) % n;
+        ordered.push(face[index]);
+      }
+      const key = ordered.join(":");
+      if (best === null || key < best) best = key;
+    }
+  }
+  return best;
+}
+
+export function facesEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  return faceKey(a) === faceKey(b);
+}
+
+function polygonArea(vertices, face) {
+  let area = 0;
+  for (let i = 0; i < face.length; i += 1) {
+    const a = vertices[face[i]];
+    const b = vertices[face[(i + 1) % face.length]];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return area / 2;
+}
+
+function buildAdjacency(edges) {
+  const adj = new Map();
+  for (const edge of edges) {
+    const [a, b] = edge;
+    if (!adj.has(a)) adj.set(a, new Set());
+    if (!adj.has(b)) adj.set(b, new Set());
+    adj.get(a).add(b);
+    adj.get(b).add(a);
+  }
+  return adj;
+}
+
+function windFace(vertices, face) {
+  return polygonArea(vertices, face) >= 0 ? [...face] : [...face].reverse();
+}
+
+/**
+ * Find triangle/quad cycles that use newly drawn path segments and are not already faces.
+ */
+export function findSealableFaces(faces, edges, path, vertices) {
+  if (!path || path.length < 2) return [];
+  const adj = buildAdjacency(edges);
+  const existing = new Set(faces.map((face) => faceKey(face)));
+  const found = [];
+  const seen = new Set();
+
+  const consider = (cycle) => {
+    if (cycle.length !== 3 && cycle.length !== 4) return;
+    if (new Set(cycle).size !== cycle.length) return;
+    for (let i = 0; i < cycle.length; i += 1) {
+      if (!hasEdge(edges, cycle[i], cycle[(i + 1) % cycle.length])) return;
+    }
+    const wound = windFace(vertices, cycle);
+    if (Math.abs(polygonArea(vertices, wound)) < 1e-12) return;
+    const key = faceKey(wound);
+    if (seen.has(key) || existing.has(key)) return;
+    seen.add(key);
+    found.push(wound);
+  };
+
+  for (let i = 0; i < path.length - 1; i += 1) {
+    const a = path[i];
+    const b = path[i + 1];
+    const neighborsA = adj.get(a) || new Set();
+    const neighborsB = adj.get(b) || new Set();
+    for (const w of neighborsA) {
+      if (w === b) continue;
+      if (neighborsB.has(w)) consider([a, b, w]);
+    }
+    for (const c of neighborsB) {
+      if (c === a) continue;
+      const neighborsC = adj.get(c) || new Set();
+      for (const d of neighborsC) {
+        if (d === b || d === a) continue;
+        if (neighborsA.has(d)) consider([a, b, c, d]);
+      }
+    }
+  }
+
+  found.sort((left, right) => left.length - right.length);
+  return found;
+}
+
+/**
+ * Add closed triangle/quad faces along a knife path when all boundary edges already exist.
+ */
+export function sealFacesAlongPath(faces, edges, path, vertices) {
+  const sealed = findSealableFaces(faces, edges, path, vertices);
+  if (!sealed.length) {
+    return { faces: faces.map((face) => [...face]), edges, added: [] };
+  }
+  // Prefer triangles; skip a quad if any of its 3-cycles was also sealed in this pass.
+  const added = [];
+  const triKeys = new Set();
+  for (const face of sealed) {
+    if (face.length === 3) {
+      added.push(face);
+      triKeys.add(faceKey(face));
+    }
+  }
+  for (const face of sealed) {
+    if (face.length !== 4) continue;
+    const corners = face;
+    let coversTri = false;
+    for (let i = 0; i < 4; i += 1) {
+      const tri = [corners[i], corners[(i + 1) % 4], corners[(i + 2) % 4]];
+      if (triKeys.has(faceKey(tri))) {
+        coversTri = true;
+        break;
+      }
+    }
+    if (!coversTri) added.push(face);
+  }
+  return {
+    faces: [...faces.map((face) => [...face]), ...added.map((face) => [...face])],
+    edges,
+    added,
+  };
+}
+
+/**
+ * Remove a face but keep its vertices and boundary edges.
+ */
+export function deleteFace(sourceVertices, warpVertices, faces, edges, face) {
+  const key = faceKey(face);
+  const nextFaces = faces.filter((entry) => faceKey(entry) !== key);
+  let nextEdges = ensureEdges(faces, edges);
+  for (const faceEdge of edgesFromFace(face)) {
+    nextEdges = addEdge(nextEdges, faceEdge[0], faceEdge[1]);
+  }
+  return {
+    sourceVertices: sourceVertices.map((p) => ({ ...p })),
+    warpVertices: warpVertices.map((p) => ({ ...p })),
+    faces: nextFaces.map((f) => [...f]),
+    edges: nextEdges,
+  };
+}
+
+/** Ray-cast point-in-polygon for a face in document space. */
+export function pointInFace(point, vertices, face) {
+  let inside = false;
+  for (let i = 0, j = face.length - 1; i < face.length; j = i, i += 1) {
+    const a = vertices[face[i]];
+    const b = vertices[face[j]];
+    const intersects =
+      a.y > point.y !== b.y > point.y &&
+      point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y + EPSILON) + a.x;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+
+/** Smallest-area face containing the point, or null. */
+export function findFaceAtPoint(point, vertices, faces) {
+  let best = null;
+  let bestArea = Infinity;
+  for (const face of faces) {
+    if (!pointInFace(point, vertices, face)) continue;
+    const area = Math.abs(polygonArea(vertices, face));
+    if (area < bestArea) {
+      bestArea = area;
+      best = [...face];
+    }
+  }
+  return best;
+}
+
+/** Vertices whose positions fall inside an axis-aligned document-space rect. */
+export function verticesInRect(vertices, rect) {
+  const left = Math.min(rect.x0, rect.x1);
+  const right = Math.max(rect.x0, rect.x1);
+  const top = Math.min(rect.y0, rect.y1);
+  const bottom = Math.max(rect.y0, rect.y1);
+  const hits = [];
+  vertices.forEach((point, index) => {
+    if (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom) {
+      hits.push(index);
+    }
+  });
+  return hits;
+}
+
+export function bridgeEdges(sourceVertices, warpVertices, faces, edgeA, edgeB, edges = null) {
   if (sameEdge(edgeA, edgeB)) {
     throw new Error("Select two different edges to bridge.");
   }
@@ -372,34 +746,46 @@ export function bridgeEdges(sourceVertices, warpVertices, faces, edgeA, edgeB) {
     face = [a0, a1, b0, b1];
   }
 
+  let nextEdges = ensureEdges(faces, edges);
+  for (const faceEdge of edgesFromFace(face)) {
+    nextEdges = addEdge(nextEdges, faceEdge[0], faceEdge[1]);
+  }
   return {
     sourceVertices: sourceVertices.map((p) => ({ ...p })),
     warpVertices: warpVertices.map((p) => ({ ...p })),
     faces: [...faces.map((f) => [...f]), face],
+    edges: nextEdges,
   };
 }
 
 /**
- * Resolve what a Pen click should do given current selection.
+ * Resolve what a Draw click should do given current selection.
  * selection: { vertices: number[], edge: [a,b]|null, face: number[]|null }
+ *
+ * Draw behaviour:
+ * - Click an edge with nothing selected → insert a point only
+ * - Click an edge / empty with a point selected → knife cut (persist edges, split faces along cut)
+ * - Two points / an edge selected → extrude a triangle / complete a quad as before
  */
 export function resolvePenAction({
   selection,
   clickPoint,
   sourceVertices,
   faces,
+  edges = null,
   insertMode = "tri-quad",
   snapThreshold = 0.02,
 }) {
-  const snap = snapToMesh(clickPoint, sourceVertices, faces, snapThreshold);
+  const snap = snapToMesh(clickPoint, sourceVertices, faces, snapThreshold, edges);
   const point = snap.kind === "none" ? clampPoint(clickPoint) : snap.point;
   const snappedVertex = snap.kind === "vertex" ? snap.index : null;
 
-  // Two loose points act like an edge so the next click closes a triangle.
   const activeEdge =
     selection.edge || (selection.vertices.length === 2 ? [...selection.vertices] : null);
+  const singleVertex =
+    selection.vertices.length === 1 ? selection.vertices[0]
+      : (!activeEdge && !selection.face && selection.vertices.length > 0 ? selection.vertices[0] : null);
 
-  // Clicking a point of the active edge restarts from that point.
   if (activeEdge && snappedVertex !== null && activeEdge.includes(snappedVertex)) {
     return {
       type: "select-only",
@@ -409,46 +795,34 @@ export function resolvePenAction({
     };
   }
 
-  // Prefer an edge hit that includes open edges (not only face edges).
   const edgeHit =
     snappedVertex !== null
       ? null
       : snap.kind === "edge"
         ? snap
-        : nearestAnyEdge(clickPoint, sourceVertices, faces, snapThreshold, activeEdge ? [activeEdge] : []);
+        : nearestEdge(clickPoint, sourceVertices, faces, snapThreshold, edges);
 
-  // Bridge: one edge selected + click lands on another edge
-  if (activeEdge && edgeHit && !sameEdge(activeEdge, edgeHit.edge)) {
-    return {
-      type: "bridge",
-      edgeA: [...activeEdge],
-      edgeB: [...edgeHit.edge],
-      preview: {
-        kind: "quad",
-        points: [
-          sourceVertices[activeEdge[0]],
-          sourceVertices[activeEdge[1]],
-          sourceVertices[edgeHit.edge[1]],
-          sourceVertices[edgeHit.edge[0]],
-        ],
-      },
-      hint: "Bridge these edges with a quad",
-    };
-  }
-
-  // Click on existing edge with nothing useful selected → split
-  if (
-    !activeEdge &&
-    !selection.face &&
-    edgeHit &&
-    selection.vertices.length === 0
-  ) {
+  if (edgeHit) {
+    if (singleVertex !== null && !edgeHit.edge.includes(singleVertex)) {
+      return {
+        type: "split-and-connect",
+        from: singleVertex,
+        edge: [...edgeHit.edge],
+        point: edgeHit.point,
+        preview: {
+          kind: "edge",
+          points: [sourceVertices[singleVertex], edgeHit.point],
+          marker: edgeHit.point,
+        },
+        hint: "Cut to this line",
+      };
+    }
     return {
       type: "split-edge",
       edge: [...edgeHit.edge],
       point: edgeHit.point,
       preview: { kind: "vertex", point: edgeHit.point },
-      hint: "Split this edge",
+      hint: "Add a point on this line",
     };
   }
 
@@ -461,7 +835,6 @@ export function resolvePenAction({
     };
   }
 
-  // Triangle selected → complete to quad
   if (selection.face && selection.face.length === 3) {
     const reuse = snappedVertex !== null && !selection.face.includes(snappedVertex) ? snappedVertex : null;
     return {
@@ -484,7 +857,6 @@ export function resolvePenAction({
     };
   }
 
-  // Edge selected
   if (activeEdge) {
     if (insertMode === "edge") {
       return {
@@ -499,8 +871,7 @@ export function resolvePenAction({
         hint: "Extrude an open edge",
       };
     }
-    if (insertMode === "quad-strip") {
-      // Parallel edge centered on click, quad between
+    if (insertMode === "quad") {
       const a = sourceVertices[activeEdge[0]];
       const b = sourceVertices[activeEdge[1]];
       const dx = b.x - a.x;
@@ -522,7 +893,6 @@ export function resolvePenAction({
         hint: "Extrude a quad strip",
       };
     }
-    // tri-quad default: triangle from edge to point
     return {
       type: "extrude-triangle",
       edge: [...activeEdge],
@@ -538,23 +908,26 @@ export function resolvePenAction({
     };
   }
 
-  // Single vertex selected → extrude edge
-  if (selection.vertices.length === 1) {
-    const from = selection.vertices[0];
+  if (singleVertex !== null) {
+    const from = singleVertex;
+    const targetPoint = snap.kind === "vertex" && snap.index !== from ? sourceVertices[snap.index] : point;
+    const toExisting = snap.kind === "vertex" && snap.index !== from ? snap.index : null;
     return {
-      type: "extrude-edge",
+      type: "connect-line",
       from,
-      point: snap.kind === "vertex" && snap.index !== from ? sourceVertices[snap.index] : point,
-      toExisting: snap.kind === "vertex" && snap.index !== from ? snap.index : null,
+      point: targetPoint,
+      toExisting,
       preview: {
         kind: "edge",
-        points: [sourceVertices[from], snap.kind === "vertex" && snap.index !== from ? sourceVertices[snap.index] : point],
+        points: [sourceVertices[from], targetPoint],
+        marker: targetPoint,
       },
-      hint: "Extrude an edge from this vertex",
+      hint: toExisting === null
+        ? "Draw a cut to a new point"
+        : "Cut between these points",
     };
   }
 
-  // Nothing selected
   if (snap.kind === "vertex") {
     return {
       type: "select-only",
@@ -572,16 +945,39 @@ export function resolvePenAction({
   };
 }
 
-/**
- * Apply a resolved pen action. Returns next mesh + selection hint.
- */
-export function applyPenAction(action, sourceVertices, warpVertices, faces) {
-  const nextSource = sourceVertices.map((p) => ({ ...p }));
-  const nextWarp = warpVertices.map((p) => ({ ...p }));
+export function applyPenAction(action, sourceVertices, warpVertices, faces, edges = null, options = {}) {
+  const faceMode = options.faceMode !== false;
+  let nextSource = sourceVertices.map((p) => ({ ...p }));
+  let nextWarp = warpVertices.map((p) => ({ ...p }));
   let nextFaces = faces.map((f) => [...f]);
+  let nextEdges = ensureEdges(faces, edges);
   let selectVertices = [];
   let selectEdge = null;
   let selectFace = null;
+
+  const withEdges = (result, selection) => ({
+    sourceVertices: result.sourceVertices,
+    warpVertices: result.warpVertices,
+    faces: result.faces,
+    edges: result.edges ?? nextEdges,
+    selection,
+  });
+
+  const maybeSeal = (connected) => {
+    if (!faceMode) return { ...connected, added: [] };
+    const sealed = sealFacesAlongPath(
+      connected.faces,
+      connected.edges,
+      connected.path,
+      connected.sourceVertices,
+    );
+    return {
+      ...connected,
+      faces: sealed.faces,
+      edges: sealed.edges,
+      added: sealed.added,
+    };
+  };
 
   switch (action.type) {
     case "select-only": {
@@ -594,15 +990,43 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       selectVertices = [index];
       break;
     }
+    case "connect-line":
     case "extrude-edge": {
-      let toIndex = action.toExisting;
-      if (toIndex === null || toIndex === undefined) {
-        toIndex = addVertex(nextSource, action.point);
-        addVertex(nextWarp, action.point);
-      }
-      selectEdge = [action.from, toIndex];
-      selectVertices = [action.from, toIndex];
-      break;
+      const connected = maybeSeal(
+        knifeConnect(
+          nextSource,
+          nextWarp,
+          nextFaces,
+          nextEdges,
+          action.from,
+          action.point,
+          action.toExisting,
+        ),
+      );
+      return withEdges(connected, {
+        vertices: [connected.toIndex],
+        edge: null,
+        face: connected.added?.length ? connected.added[connected.added.length - 1] : null,
+      });
+    }
+    case "split-and-connect": {
+      const split = splitEdge(nextSource, nextWarp, nextFaces, action.edge, action.point, nextEdges);
+      const connected = maybeSeal(
+        knifeConnect(
+          split.sourceVertices,
+          split.warpVertices,
+          split.faces,
+          split.edges,
+          action.from,
+          split.sourceVertices[split.newVertexIndex],
+          split.newVertexIndex,
+        ),
+      );
+      return withEdges(connected, {
+        vertices: [connected.toIndex],
+        edge: null,
+        face: connected.added?.length ? connected.added[connected.added.length - 1] : null,
+      });
     }
     case "extrude-triangle": {
       let tipIndex = action.toExisting;
@@ -610,9 +1034,26 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
         tipIndex = addVertex(nextSource, action.point);
         addVertex(nextWarp, action.point);
       }
+      let mesh = knifeConnect(
+        nextSource, nextWarp, nextFaces, nextEdges,
+        action.edge[0], nextSource[tipIndex], tipIndex,
+      );
+      tipIndex = mesh.toIndex;
+      mesh = knifeConnect(
+        mesh.sourceVertices, mesh.warpVertices, mesh.faces, mesh.edges,
+        action.edge[1], mesh.sourceVertices[tipIndex], tipIndex,
+      );
+      tipIndex = mesh.toIndex;
+      nextSource = mesh.sourceVertices;
+      nextWarp = mesh.warpVertices;
+      nextFaces = mesh.faces;
+      nextEdges = mesh.edges;
       const face = [action.edge[0], action.edge[1], tipIndex];
       if (new Set(face).size !== 3) throw new Error("That triangle would reuse the same point twice.");
       nextFaces.push(face);
+      for (const faceEdge of edgesFromFace(face)) {
+        nextEdges = addEdge(nextEdges, faceEdge[0], faceEdge[1]);
+      }
       selectFace = face;
       selectVertices = [...face];
       selectEdge = null;
@@ -633,35 +1074,28 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       );
       const face = [...action.face, newIndex];
       nextFaces.push(face);
+      for (const faceEdge of edgesFromFace(face)) {
+        nextEdges = addEdge(nextEdges, faceEdge[0], faceEdge[1]);
+      }
       selectFace = face;
       selectVertices = [...face];
       break;
     }
     case "bridge": {
-      const bridged = bridgeEdges(nextSource, nextWarp, nextFaces, action.edgeA, action.edgeB);
-      return {
-        sourceVertices: bridged.sourceVertices,
-        warpVertices: bridged.warpVertices,
-        faces: bridged.faces,
-        selection: {
-          vertices: [...action.edgeA, ...action.edgeB],
-          edge: null,
-          face: bridged.faces[bridged.faces.length - 1],
-        },
-      };
+      const bridged = bridgeEdges(nextSource, nextWarp, nextFaces, action.edgeA, action.edgeB, nextEdges);
+      return withEdges(bridged, {
+        vertices: [...action.edgeA, ...action.edgeB],
+        edge: null,
+        face: bridged.faces[bridged.faces.length - 1],
+      });
     }
     case "split-edge": {
-      const split = splitEdge(nextSource, nextWarp, nextFaces, action.edge, action.point);
-      return {
-        sourceVertices: split.sourceVertices,
-        warpVertices: split.warpVertices,
-        faces: split.faces,
-        selection: {
-          vertices: [split.newVertexIndex],
-          edge: null,
-          face: null,
-        },
-      };
+      const split = splitEdge(nextSource, nextWarp, nextFaces, action.edge, action.point, nextEdges);
+      return withEdges(split, {
+        vertices: [split.newVertexIndex],
+        edge: null,
+        face: null,
+      });
     }
     case "quad-strip": {
       const c = addVertex(nextSource, action.newEdge[0]);
@@ -670,6 +1104,9 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
       addVertex(nextWarp, action.newEdge[1]);
       const face = [action.edge[0], action.edge[1], d, c];
       nextFaces.push(face);
+      for (const faceEdge of edgesFromFace(face)) {
+        nextEdges = addEdge(nextEdges, faceEdge[0], faceEdge[1]);
+      }
       selectEdge = [c, d];
       selectFace = face;
       selectVertices = [...face];
@@ -681,6 +1118,7 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
         newIndex = addVertex(nextSource, action.point);
         addVertex(nextWarp, action.point);
       }
+      nextEdges = addEdge(nextEdges, action.edge[0], newIndex);
       selectEdge = [action.edge[0], newIndex];
       selectVertices = [action.edge[0], newIndex];
       break;
@@ -693,6 +1131,7 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
     sourceVertices: nextSource,
     warpVertices: nextWarp,
     faces: nextFaces,
+    edges: nextEdges,
     selection: {
       vertices: selectVertices,
       edge: selectEdge,
@@ -701,10 +1140,7 @@ export function applyPenAction(action, sourceVertices, warpVertices, faces) {
   };
 }
 
-/**
- * Delete a vertex and remove faces that used it. Leaves remaining faces intact.
- */
-export function deleteVertex(sourceVertices, warpVertices, faces, vertexIndex) {
+export function deleteVertex(sourceVertices, warpVertices, faces, vertexIndex, edges = null) {
   if (vertexIndex < 0 || vertexIndex >= sourceVertices.length) {
     throw new Error("That vertex does not exist.");
   }
@@ -714,12 +1150,14 @@ export function deleteVertex(sourceVertices, warpVertices, faces, vertexIndex) {
 
   const nextSource = sourceVertices.filter((_, index) => index !== vertexIndex);
   const nextWarp = warpVertices.filter((_, index) => index !== vertexIndex);
+  const nextEdges = remapEdges(ensureEdges(faces, edges), vertexIndex);
 
   if (nextSource.length === 0) {
     return {
       sourceVertices: [],
       warpVertices: [],
       faces: [],
+      edges: [],
     };
   }
 
@@ -727,6 +1165,7 @@ export function deleteVertex(sourceVertices, warpVertices, faces, vertexIndex) {
     sourceVertices: nextSource,
     warpVertices: nextWarp,
     faces: remainingFaces,
+    edges: nextEdges,
   };
 }
 
@@ -740,8 +1179,8 @@ export function validateFaces(vertices, faces) {
     }
   }
   for (const face of faces) {
-    if (!Array.isArray(face) || (face.length !== 3 && face.length !== 4)) {
-      throw new Error("Every face must be a triangle or a quad.");
+    if (!Array.isArray(face) || face.length < 3) {
+      throw new Error("Every face must have at least three vertices.");
     }
     if (new Set(face).size !== face.length) {
       throw new Error("A face refers to the same vertex more than once.");
@@ -751,6 +1190,23 @@ export function validateFaces(vertices, faces) {
         throw new Error("A face refers to an invalid vertex.");
       }
     }
+  }
+  return true;
+}
+
+export function validateEdges(vertices, edges) {
+  if (edges == null) return true;
+  if (!Array.isArray(edges)) throw new Error("Mesh edges must be an array.");
+  for (const edge of edges) {
+    if (!Array.isArray(edge) || edge.length !== 2) {
+      throw new Error("Every edge must list two vertex indices.");
+    }
+    for (const index of edge) {
+      if (!Number.isInteger(index) || index < 0 || index >= vertices.length) {
+        throw new Error("An edge refers to an invalid vertex.");
+      }
+    }
+    if (edge[0] === edge[1]) throw new Error("An edge cannot connect a vertex to itself.");
   }
   return true;
 }
@@ -768,6 +1224,12 @@ export function seedQuadMesh(bounds) {
     sourceVertices: vertices.map((p) => ({ ...p })),
     warpVertices: vertices.map((p) => ({ ...p })),
     quads: [[0, 1, 2, 3]],
+    edges: [
+      [0, 1],
+      [1, 2],
+      [2, 3],
+      [3, 0],
+    ],
     warpLinked: true,
   };
 }
@@ -776,9 +1238,16 @@ export function seedQuadMesh(bounds) {
 export function triangulateFaces(faces) {
   return faces.flatMap((face) => {
     if (face.length === 3) return [face];
-    return [
-      [face[0], face[1], face[2]],
-      [face[0], face[2], face[3]],
-    ];
+    if (face.length === 4) {
+      return [
+        [face[0], face[1], face[2]],
+        [face[0], face[2], face[3]],
+      ];
+    }
+    const tris = [];
+    for (let i = 1; i < face.length - 1; i += 1) {
+      tris.push([face[0], face[i], face[i + 1]]);
+    }
+    return tris;
   });
 }

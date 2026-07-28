@@ -157,14 +157,30 @@ export function validateMesh(mesh) {
   for (const face of mesh.quads) {
     if (
       !Array.isArray(face) ||
-      (face.length !== 3 && face.length !== 4) ||
+      face.length < 3 ||
       new Set(face).size !== face.length
     ) {
-      throw new Error("Every mesh face must be a triangle or quad with distinct vertices.");
+      throw new Error("Every mesh face must have at least three distinct vertices.");
     }
     for (const index of face) {
       if (!Number.isInteger(index) || index < 0 || index >= mesh.vertices.length) {
         throw new Error("A mesh face refers to an invalid vertex.");
+      }
+    }
+  }
+
+  if (mesh.edges != null) {
+    if (!Array.isArray(mesh.edges)) {
+      throw new Error("Mesh edges must be an array.");
+    }
+    for (const edge of mesh.edges) {
+      if (!Array.isArray(edge) || edge.length !== 2) {
+        throw new Error("Every edge must list two vertex indices.");
+      }
+      for (const index of edge) {
+        if (!Number.isInteger(index) || index < 0 || index >= mesh.vertices.length) {
+          throw new Error("An edge refers to an invalid vertex.");
+        }
       }
     }
   }
@@ -211,6 +227,7 @@ export function validateProjectMesh(mesh) {
   validateMesh({
     vertices: mesh.sourceVertices,
     quads: mesh.quads,
+    edges: mesh.edges,
   });
 
   for (const point of mesh.warpVertices) {

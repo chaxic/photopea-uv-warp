@@ -15,15 +15,23 @@ import {
 } from "./photopea.js";
 import {
   applyPenAction,
+  deleteEdge,
+  deleteFace,
   deleteVertex,
+  drawableEdges,
   edgeUsage,
+  ensureEdges,
+  facesEqual,
+  findFaceAtPoint,
   nearestEdge,
   nearestVertex,
   resolvePenAction,
   seedQuadMesh,
   triangulateFaces,
+  validateEdges,
   validateFaces,
   vertexUsage,
+  verticesInRect,
 } from "./polypen.js";
 import { drawWarpedMesh, meshWarnings, triangulateQuads } from "./warp.js";
 
@@ -58,6 +66,10 @@ const elements = {
   modeWarp: document.querySelector("#mode-warp"),
   toolPen: document.querySelector("#tool-pen"),
   toolSelect: document.querySelector("#tool-select"),
+  drawModeLine: document.querySelector("#draw-mode-line"),
+  drawModeFace: document.querySelector("#draw-mode-face"),
+  drawModeTools: document.querySelector("#draw-mode-tools"),
+  layoutToolCluster: document.querySelector("#layout-tool-cluster"),
   layoutTools: document.querySelector("#layout-tools"),
   previewToggle: document.querySelector("#preview-toggle"),
   meshToggle: document.querySelector("#mesh-toggle"),
@@ -91,6 +103,8 @@ const state = {
   mode: "layout",
   layoutTool: "pen",
   insertMode: "tri-quad",
+  faceMode: true,
+  ctrlLineHeld: false,
   preview: true,
   meshVisible: true,
   trianglesVisible: false,
@@ -117,6 +131,7 @@ const state = {
   panDrag: null,
   panReady: false,
   drag: null,
+  marquee: null,
   outputSession: null,
   outputTimeoutId: null,
   undo: [],
@@ -162,6 +177,8 @@ function setBusy(busy) {
   disabled(elements.deleteSelection, true);
   disabled(elements.toolPen, true);
   disabled(elements.toolSelect, true);
+  disabled(elements.drawModeLine, true);
+  disabled(elements.drawModeFace, true);
   elements.referenceFile.disabled = busy || !state.project;
   updateHistoryButtons();
 }
@@ -173,7 +190,7 @@ function setProjectReady(ready) {
   for (const element of [
     elements.modeLayout, elements.modeWarp, elements.previewToggle, elements.meshToggle,
     elements.trianglesToggle, elements.connectionsToggle, elements.fullscreenToggle,
-    elements.toolPen, elements.toolSelect,
+    elements.toolPen, elements.toolSelect, elements.drawModeLine, elements.drawModeFace,
     elements.deleteSelection, elements.sourceOpacity,
     elements.referenceOpacity, elements.referenceTintToggle, elements.referenceTintColor,
     elements.backgroundColor,
@@ -255,6 +272,7 @@ function snapshotMesh() {
     name: mesh.name,
     warpLinked: Boolean(mesh.warpLinked),
     quads: mesh.quads.map((face) => [...face]),
+    edges: ensureEdges(mesh.quads, mesh.edges).map((edge) => [...edge]),
     sourceVertices: clonePoints(mesh.sourceVertices),
     warpVertices: clonePoints(mesh.warpVertices),
   };
@@ -272,6 +290,7 @@ function restoreMesh(snapshot) {
     name: snapshot.name,
     warpLinked: Boolean(snapshot.warpLinked),
     quads: snapshot.quads.map((face) => [...face]),
+    edges: ensureEdges(snapshot.quads, snapshot.edges).map((edge) => [...edge]),
     sourceVertices: clonePoints(snapshot.sourceVertices),
     warpVertices: clonePoints(snapshot.warpVertices),
   };
@@ -315,14 +334,65 @@ function setMode(mode) {
   if (mode !== "layout") state.penPreview = null;
   setToggle(elements.modeLayout, mode === "layout");
   setToggle(elements.modeWarp, mode === "warp");
-  elements.layoutTools.classList.toggle("is-hidden", mode !== "layout");
+  if (elements.layoutToolCluster) {
+    elements.layoutToolCluster.classList.toggle("is-hidden", mode !== "layout");
+  } else {
+    elements.layoutTools.classList.toggle("is-hidden", mode !== "layout");
+  }
+  if (elements.drawModeTools) {
+    elements.drawModeTools.classList.toggle("is-hidden", mode !== "layout" || state.layoutTool !== "pen");
+  }
+  syncDrawModeUi();
   updateCanvasBadge();
-  elements.selectionHint.textContent = mode === "layout"
-    ? state.layoutTool === "pen"
-      ? "Draw (D): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge."
-      : "Select (S): click or shift-click points, then drag. Arrow keys nudge."
-    : "Move matching points onto the reference. Preview updates live.";
+  updateSelectionHint();
   scheduleRender();
+}
+
+function effectiveFaceMode() {
+  return state.faceMode && !state.ctrlLineHeld;
+}
+
+function syncDrawModeUi() {
+  if (!elements.drawModeLine || !elements.drawModeFace) return;
+  const faceActive = effectiveFaceMode();
+  setToggle(elements.drawModeFace, faceActive);
+  setToggle(elements.drawModeLine, !faceActive);
+  elements.drawModeLine.classList.toggle("is-temp", state.ctrlLineHeld && state.faceMode);
+  elements.drawModeFace.classList.toggle("is-temp", false);
+  if (elements.drawModeTools) {
+    elements.drawModeTools.title = state.ctrlLineHeld && state.faceMode
+      ? "Line mode while Ctrl is held (release Ctrl to return to Face)"
+      : "Draw mode — Line or Face";
+  }
+}
+
+function setCtrlLineHeld(held) {
+  const next = Boolean(held);
+  if (next === state.ctrlLineHeld) return;
+  state.ctrlLineHeld = next;
+  syncDrawModeUi();
+  updateSelectionHint();
+  updateCanvasBadge();
+}
+
+function updateSelectionHint() {
+  const face = effectiveFaceMode();
+  elements.selectionHint.textContent = state.mode === "layout"
+    ? state.layoutTool === "pen"
+      ? face
+        ? "Draw · Face: closing a triangle/quad creates a face. Hold Ctrl (or switch to Line) for knife-only cuts."
+        : state.ctrlLineHeld && state.faceMode
+          ? "Draw · Line (Ctrl): knife-only cuts. Release Ctrl to return to Face mode."
+          : "Draw · Line: draw and cut without auto-faces. Switch to Face (or release Ctrl) to seal loops into faces."
+      : "Select (S): click a point, line, or face; drag empty space for a marquee. Del removes the selection (faces/lines keep points)."
+    : "Move matching points onto the reference. Preview updates live.";
+}
+
+function setFaceMode(faceMode) {
+  state.faceMode = Boolean(faceMode);
+  syncDrawModeUi();
+  updateSelectionHint();
+  updateCanvasBadge();
 }
 
 function setLayoutTool(tool) {
@@ -425,7 +495,9 @@ function canvasToDocument(point, metrics) {
 }
 
 function updateCanvasBadge() {
-  const tool = state.layoutTool === "pen" ? "Draw tool" : "Select tool";
+  const tool = state.layoutTool === "pen"
+    ? `Draw · ${effectiveFaceMode() ? "Face" : "Line"}`
+    : "Select tool";
   const base = state.mode === "layout"
     ? `Layout · ${tool}`
     : state.preview ? "Warp · live preview" : "Warp · original preview";
@@ -637,17 +709,23 @@ function drawMeshOverlay(context, metrics) {
   const mesh = state.project.mesh;
   const vertices = state.mode === "layout" ? mesh.sourceVertices : mesh.warpVertices;
   const points = vertices.map((point) => documentToCanvas(point, metrics));
+  const edges = drawableEdges(mesh.quads, mesh.edges);
   context.save();
   context.lineCap = "round";
   context.lineJoin = "round";
   for (const face of mesh.quads) {
-    const faceSelected = state.selectedFace && face.length === state.selectedFace.length &&
-      face.every((index, position) => index === state.selectedFace[position]);
+    const faceSelected = state.selectedFace && facesEqual(face, state.selectedFace);
     tracePolygon(context, explodedFacePoints(face, points));
-    context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.16)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
+    context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.22)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
     context.fill();
-    context.strokeStyle = state.mode === "layout" ? "rgba(170, 178, 255, 0.92)" : "rgba(105, 232, 194, 0.94)";
-    context.lineWidth = 1.25 * metrics.ratio;
+  }
+  // Draw all stored/face edges once (includes free knife cuts).
+  context.strokeStyle = state.mode === "layout" ? "rgba(170, 178, 255, 0.92)" : "rgba(105, 232, 194, 0.94)";
+  context.lineWidth = 1.25 * metrics.ratio;
+  for (const edge of edges) {
+    context.beginPath();
+    context.moveTo(points[edge[0]].x, points[edge[0]].y);
+    context.lineTo(points[edge[1]].x, points[edge[1]].y);
     context.stroke();
   }
   if (state.trianglesVisible) {
@@ -674,21 +752,46 @@ function drawMeshOverlay(context, metrics) {
   context.restore();
 }
 
+function drawMarquee(context, metrics) {
+  if (!state.marquee) return;
+  const a = documentToCanvas({ x: state.marquee.start.x, y: state.marquee.start.y }, metrics);
+  const b = documentToCanvas({ x: state.marquee.current.x, y: state.marquee.current.y }, metrics);
+  const left = Math.min(a.x, b.x);
+  const top = Math.min(a.y, b.y);
+  const width = Math.abs(a.x - b.x);
+  const height = Math.abs(a.y - b.y);
+  context.save();
+  context.fillStyle = "rgba(255, 209, 102, 0.12)";
+  context.strokeStyle = "#ffd166";
+  context.lineWidth = metrics.ratio;
+  context.setLineDash([4 * metrics.ratio, 3 * metrics.ratio]);
+  context.fillRect(left, top, width, height);
+  context.strokeRect(left, top, width, height);
+  context.restore();
+}
+
 function drawPenPreview(context, metrics) {
   const preview = state.penPreview?.preview;
   if (!preview) return;
   context.save();
-  context.setLineDash([6 * metrics.ratio, 4 * metrics.ratio]);
   context.strokeStyle = "#ffd166";
   context.fillStyle = "rgba(255, 209, 102, 0.12)";
   context.lineWidth = 1.5 * metrics.ratio;
-  if (preview.kind === "vertex") {
-    const point = documentToCanvas(preview.point, metrics);
+
+  const drawMarker = (docPoint) => {
+    if (!docPoint) return;
+    const point = documentToCanvas(docPoint, metrics);
+    context.setLineDash([]);
     context.beginPath();
     context.arc(point.x, point.y, 5 * metrics.ratio, 0, Math.PI * 2);
     context.fill();
     context.stroke();
+  };
+
+  if (preview.kind === "vertex") {
+    drawMarker(preview.point);
   } else {
+    context.setLineDash([6 * metrics.ratio, 4 * metrics.ratio]);
     context.beginPath();
     preview.points.forEach((point, index) => {
       const display = documentToCanvas(point, metrics);
@@ -698,6 +801,13 @@ function drawPenPreview(context, metrics) {
     if (preview.kind !== "edge") context.closePath();
     context.fill();
     context.stroke();
+    // Always show the snap/target point ring (same as hovering a line with no selection).
+    const marker =
+      preview.marker ||
+      (preview.kind === "edge" && preview.points.length
+        ? preview.points[preview.points.length - 1]
+        : null);
+    drawMarker(marker);
   }
   context.restore();
 }
@@ -722,6 +832,7 @@ function render() {
   }
   drawMeshOverlay(context, metrics);
   if (state.mode === "layout" && state.layoutTool === "pen") drawPenPreview(context, metrics);
+  drawMarquee(context, metrics);
 }
 
 function scheduleRender() {
@@ -746,15 +857,25 @@ function activeVertices() {
   return state.mode === "layout" ? state.project.mesh.sourceVertices : state.project.mesh.warpVertices;
 }
 
-function setPointSelection(indices, { preserve = false } = {}) {
-  if (!preserve) state.selectedPoints.clear();
-  indices.forEach((index) => state.selectedPoints.add(index));
-}
-
 function selectEdge(edge, preserve = false) {
+  if (!preserve) state.selectedPoints.clear();
   state.selectedEdge = [...edge];
   state.selectedFace = null;
-  setPointSelection(edge, { preserve });
+}
+
+function selectFace(face, preserve = false) {
+  if (!preserve) state.selectedPoints.clear();
+  state.selectedEdge = null;
+  state.selectedFace = [...face];
+}
+
+function setPointSelection(indices, { preserve = false } = {}) {
+  if (!preserve) {
+    state.selectedPoints.clear();
+    state.selectedEdge = null;
+    state.selectedFace = null;
+  }
+  indices.forEach((index) => state.selectedPoints.add(index));
 }
 
 function beginDrag(event, pointerDocument) {
@@ -774,25 +895,29 @@ function beginDrag(event, pointerDocument) {
   elements.canvas.classList.add("is-dragging");
 }
 
-function applyPen(pointerDocument, metrics) {
+function applyPen(pointerDocument, metrics, event = null) {
   const mesh = state.project.mesh;
+  const faceMode = effectiveFaceMode();
   const action = resolvePenAction({
     selection: { vertices: [...state.selectedPoints], edge: state.selectedEdge, face: state.selectedFace },
     clickPoint: pointerDocument,
     sourceVertices: mesh.sourceVertices,
     faces: mesh.quads,
+    edges: mesh.edges,
     insertMode: state.insertMode,
     snapThreshold: vertexHitThreshold(metrics),
   });
   const before = snapshotMesh();
   try {
-    const result = applyPenAction(action, mesh.sourceVertices, mesh.warpVertices, mesh.quads);
+    const result = applyPenAction(action, mesh.sourceVertices, mesh.warpVertices, mesh.quads, mesh.edges, { faceMode });
     validateFaces(result.sourceVertices, result.faces);
+    validateEdges(result.sourceVertices, result.edges);
     state.project.mesh = {
       ...mesh,
       sourceVertices: result.sourceVertices,
       warpVertices: result.warpVertices,
       quads: result.faces,
+      edges: ensureEdges(result.faces, result.edges),
       warpLinked: mesh.warpLinked,
     };
     clearSelection();
@@ -800,7 +925,8 @@ function applyPen(pointerDocument, metrics) {
     state.selectedEdge = result.selection.edge;
     state.selectedFace = result.selection.face;
     if (action.type !== "select-only") pushUndo(before);
-    setStatus("success", "Mesh updated", action.hint);
+    const sealed = result.selection.face ? " Face created." : "";
+    setStatus("success", "Mesh updated", `${action.hint}${sealed}`);
   } catch (error) {
     setStatus("error", "Could not update mesh", error.message);
   }
@@ -835,20 +961,15 @@ function handlePointerDown(event) {
   const threshold = hitThreshold(metrics);
   const vertexThreshold = vertexHitThreshold(metrics);
   if (state.mode === "layout" && state.layoutTool === "pen") {
-    const edgeResult = nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold);
-    const vertex = nearestVertex(pointerDocument, vertices, vertexThreshold);
-    if (edgeResult && vertex < 0 && !state.selectedEdge && state.selectedPoints.size !== 2) {
-      selectEdge(edgeResult.edge, event.shiftKey);
-      state.penPreview = null;
-      scheduleRender();
-      event.preventDefault();
-      return;
-    }
-    applyPen(pointerDocument, metrics);
+    setCtrlLineHeld(event.ctrlKey || event.metaKey);
+    applyPen(pointerDocument, metrics, event);
+    event.preventDefault();
     return;
   }
   const vertex = nearestVertex(pointerDocument, vertices, vertexThreshold);
   if (vertex >= 0) {
+    state.selectedEdge = null;
+    state.selectedFace = null;
     if (event.shiftKey) {
       if (state.selectedPoints.has(vertex)) state.selectedPoints.delete(vertex);
       else state.selectedPoints.add(vertex);
@@ -859,10 +980,27 @@ function handlePointerDown(event) {
     if (state.selectedPoints.size) beginDrag(event, pointerDocument);
   } else {
     const edgeResult = state.mode === "layout"
-      ? nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold)
+      ? nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold, state.project.mesh.edges)
       : null;
-    if (edgeResult) selectEdge(edgeResult.edge, event.shiftKey);
-    else if (!event.shiftKey) clearSelection();
+    if (edgeResult) {
+      selectEdge(edgeResult.edge, event.shiftKey);
+    } else {
+      const faceHit = state.mode === "layout"
+        ? findFaceAtPoint(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads)
+        : null;
+      if (faceHit) {
+        selectFace(faceHit, event.shiftKey);
+      } else {
+        state.marquee = {
+          pointerId: event.pointerId,
+          start: { ...pointerDocument },
+          current: { ...pointerDocument },
+          additive: event.shiftKey,
+        };
+        try { elements.canvas.setPointerCapture(event.pointerId); } catch (_) {}
+        elements.canvas.classList.add("is-marquee");
+      }
+    }
   }
   scheduleRender();
   event.preventDefault();
@@ -881,16 +1019,24 @@ function handlePointerMove(event) {
     return;
   }
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
+  if (state.marquee && state.marquee.pointerId === event.pointerId) {
+    state.marquee.current = { ...pointerDocument };
+    scheduleRender();
+    event.preventDefault();
+    return;
+  }
   if (!state.drag) {
     const hovered = nearestVertex(pointerDocument, activeVertices(), vertexHitThreshold(metrics));
     const hoverChanged = hovered !== state.hoverVertex;
     state.hoverVertex = hovered;
     if (state.mode === "layout" && state.layoutTool === "pen") {
+      setCtrlLineHeld(event.ctrlKey || event.metaKey);
       state.penPreview = resolvePenAction({
         selection: { vertices: [...state.selectedPoints], edge: state.selectedEdge, face: state.selectedFace },
         clickPoint: pointerDocument,
         sourceVertices: state.project.mesh.sourceVertices,
         faces: state.project.mesh.quads,
+        edges: state.project.mesh.edges,
         insertMode: state.insertMode,
         snapThreshold: vertexHitThreshold(metrics),
       });
@@ -921,14 +1067,44 @@ function finishPointerDrag(event) {
     scheduleRender();
     return;
   }
+  if (state.marquee && state.marquee.pointerId === event.pointerId) {
+    try { elements.canvas.releasePointerCapture(event.pointerId); } catch (_) {}
+    const box = state.marquee;
+    state.marquee = null;
+    elements.canvas.classList.remove("is-marquee");
+    const dx = Math.abs(box.current.x - box.start.x);
+    const dy = Math.abs(box.current.y - box.start.y);
+    const metrics = viewportMetrics();
+    const clickThreshold = (4 * metrics.ratio) / Math.min(metrics.drawWidth, metrics.drawHeight);
+    if (dx <= clickThreshold && dy <= clickThreshold) {
+      if (!box.additive) clearSelection();
+    } else {
+      const hits = verticesInRect(activeVertices(), {
+        x0: box.start.x,
+        y0: box.start.y,
+        x1: box.current.x,
+        y1: box.current.y,
+      });
+      if (!box.additive) {
+        clearSelection();
+        setPointSelection(hits);
+      } else {
+        setPointSelection(hits, { preserve: true });
+      }
+      state.selectedEdge = null;
+      state.selectedFace = null;
+    }
+    scheduleRender();
+    return;
+  }
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
   if (state.drag.changed) {
     if (state.mode === "warp") state.project.mesh.warpLinked = false;
     pushUndo(state.drag.before);
     const warning = meshWarnings(state.project.mesh.sourceVertices, state.project.mesh.warpVertices, state.project.mesh.quads);
     setStatus(warning.degenerate ? "warning" : warning.flipped ? "warning" : "success",
-      warning.degenerate ? "Collapsed mesh area" : warning.flipped ? "Folded mesh area" : `${state.mode === "layout" ? "Layout" : "Warp"} updated`,
-      warning.degenerate ? "Move overlapping points apart before creating output." : warning.flipped ? "A triangle crosses over itself and may mirror the output." : `${state.selectedPoints.size} point${state.selectedPoints.size === 1 ? "" : "s"} moved.`);
+      warning.degenerate ? "Collapsed mesh area" : warning.flipped ? "Folded mesh area" : (state.mode === "layout" ? "Layout" : "Warp") + " updated",
+      warning.degenerate ? "Move overlapping points apart before creating output." : warning.flipped ? "A triangle crosses over itself and may mirror the output." : state.selectedPoints.size + " point" + (state.selectedPoints.size === 1 ? "" : "s") + " moved.");
   }
   try { elements.canvas.releasePointerCapture(event.pointerId); } catch (_) {}
   state.drag = null;
@@ -939,8 +1115,61 @@ function finishPointerDrag(event) {
 function deleteSelection() {
   if (!state.project || state.busy) return;
   if (!state.selectedPoints.size) {
+    if (state.selectedFace) {
+      const before = snapshotMesh();
+      try {
+        const mesh = state.project.mesh;
+        const result = deleteFace(
+          mesh.sourceVertices,
+          mesh.warpVertices,
+          mesh.quads,
+          mesh.edges,
+          state.selectedFace,
+        );
+        validateFaces(result.sourceVertices, result.faces);
+        validateEdges(result.sourceVertices, result.edges);
+        state.project.mesh = {
+          ...mesh,
+          sourceVertices: result.sourceVertices,
+          warpVertices: result.warpVertices,
+          quads: result.faces,
+          edges: result.edges,
+        };
+        clearSelection();
+        pushUndo(before);
+        setStatus("success", "Face deleted", "The face was removed; its points and lines were kept.");
+      } catch (error) {
+        setStatus("error", "Could not delete face", error.message);
+      }
+      scheduleRender();
+      return;
+    }
     if (state.selectedEdge) {
-      state.selectedEdge = null;
+      const before = snapshotMesh();
+      try {
+        const mesh = state.project.mesh;
+        const result = deleteEdge(
+          mesh.sourceVertices,
+          mesh.warpVertices,
+          mesh.quads,
+          mesh.edges,
+          state.selectedEdge,
+        );
+        validateFaces(result.sourceVertices, result.faces);
+        validateEdges(result.sourceVertices, result.edges);
+        state.project.mesh = {
+          ...mesh,
+          sourceVertices: result.sourceVertices,
+          warpVertices: result.warpVertices,
+          quads: result.faces,
+          edges: result.edges,
+        };
+        clearSelection();
+        pushUndo(before);
+        setStatus("success", "Line deleted", "The line was removed; its endpoints were kept.");
+      } catch (error) {
+        setStatus("error", "Could not delete line", error.message);
+      }
       scheduleRender();
     }
     return;
@@ -949,12 +1178,14 @@ function deleteSelection() {
   let source = state.project.mesh.sourceVertices;
   let warp = state.project.mesh.warpVertices;
   let faces = state.project.mesh.quads;
+  let edges = state.project.mesh.edges;
   try {
     [...state.selectedPoints].sort((a, b) => b - a).forEach((index) => {
-      ({ sourceVertices: source, warpVertices: warp, faces } = deleteVertex(source, warp, faces, index));
+      ({ sourceVertices: source, warpVertices: warp, faces, edges } = deleteVertex(source, warp, faces, index, edges));
     });
     validateFaces(source, faces);
-    state.project.mesh = { ...state.project.mesh, sourceVertices: source, warpVertices: warp, quads: faces };
+    validateEdges(source, edges);
+    state.project.mesh = { ...state.project.mesh, sourceVertices: source, warpVertices: warp, quads: faces, edges };
     clearSelection();
     pushUndo(before);
     setStatus("success", "Selection deleted", "Faces using the deleted points were removed.");
@@ -1004,6 +1235,7 @@ const TOOL_HOTKEYS = {
 };
 
 function handleKeyDown(event) {
+  setCtrlLineHeld(event.ctrlKey || event.metaKey);
   const modifier = event.ctrlKey || event.metaKey;
   if (modifier && event.key.toLowerCase() === "z") {
     event.preventDefault();
@@ -1189,6 +1421,7 @@ function normalizeLoadedProject(project) {
       name: project.mesh.name || "Custom mesh",
       warpLinked: Boolean(project.mesh.warpLinked),
       quads: project.mesh.quads.map((face) => [...face]),
+      edges: ensureEdges(project.mesh.quads, project.mesh.edges).map((edge) => [...edge]),
       sourceVertices: clonePoints(project.mesh.sourceVertices),
       warpVertices: clonePoints(project.mesh.warpVertices),
     },
@@ -1835,6 +2068,8 @@ elements.modeLayout.addEventListener("click", () => setMode("layout"));
 elements.modeWarp.addEventListener("click", () => setMode("warp"));
 elements.toolPen.addEventListener("click", () => setLayoutTool("pen"));
 elements.toolSelect.addEventListener("click", () => setLayoutTool("select"));
+elements.drawModeLine?.addEventListener("click", () => setFaceMode(false));
+elements.drawModeFace?.addEventListener("click", () => setFaceMode(true));
 elements.previewToggle.addEventListener("click", togglePreview);
 elements.meshToggle.addEventListener("click", toggleMesh);
 elements.trianglesToggle.addEventListener("click", toggleTriangles);
@@ -1883,11 +2118,13 @@ window.addEventListener("keydown", (event) => {
   handleKeyDown(event);
 });
 window.addEventListener("keyup", (event) => {
+  setCtrlLineHeld(event.ctrlKey || event.metaKey);
   if (event.code !== "Space" || !state.panReady) return;
   state.panReady = false;
   elements.canvas.classList.remove("is-pan-ready");
 });
 window.addEventListener("blur", () => {
+  setCtrlLineHeld(false);
   if (!state.panReady) return;
   state.panReady = false;
   elements.canvas.classList.remove("is-pan-ready");
@@ -1902,6 +2139,7 @@ setToggle(elements.trianglesToggle, state.trianglesVisible);
 setToggle(elements.connectionsToggle, state.connectionsVisible);
 setToggle(elements.fullscreenToggle, state.fullscreen);
 setToggle(elements.toolPen, true);
+setFaceMode(true);
 syncReferenceTintControls();
 setProjectReady(false);
 updateHistoryButtons();

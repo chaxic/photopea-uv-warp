@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.3.8" />
-    <link rel="stylesheet" href="./installer.css?v=0.3.8" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.13" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.13" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.3.8</span>
+            <span class="install-version">v0.3.13</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.3.8</strong>
+              <strong>v0.3.13</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.3.8"
+              src="./?preview=1&v=0.3.13"
               loading="eager"
             ></iframe>
           </div>
@@ -140,7 +140,7 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.3.8</span>
+        <span class="version">v0.3.13</span>
       </header>
 
       <section class="workspace-card" id="workspace-card">
@@ -150,9 +150,15 @@
             <button id="mode-warp" type="button" aria-pressed="false" title="Warp mode (2) — move points onto the reference">Warp</button>
           </div>
 
-          <div class="segmented" id="layout-tools" aria-label="Layout tools">
-            <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Draw tool (D) — create, connect, and bridge faces">Draw</button>
-            <button id="tool-select" type="button" aria-pressed="false" title="Select tool (S) — select and move points">Select</button>
+          <div class="tool-cluster" id="layout-tool-cluster">
+            <div class="segmented" id="layout-tools" aria-label="Layout tools">
+              <button class="is-active" id="tool-pen" type="button" aria-pressed="true" title="Draw tool (D) — add points on lines, connect points, and grow faces">Draw</button>
+              <button id="tool-select" type="button" aria-pressed="false" title="Select tool (S) — select points, lines, faces, or drag a marquee">Select</button>
+            </div>
+            <div class="segmented segmented-sub" id="draw-mode-tools" aria-label="Draw mode — Line or Face">
+              <button id="draw-mode-line" type="button" aria-pressed="false" title="Line mode — draw and cut without auto-creating faces (also while holding Ctrl)">Line</button>
+              <button class="is-active" id="draw-mode-face" type="button" aria-pressed="true" title="Face mode — closing a triangle or quad automatically creates a face (default)">Face</button>
+            </div>
           </div>
 
           <button class="toolbar-toggle is-active" id="preview-toggle" type="button" aria-pressed="true" title="Preview (P) — show the live warped image">
@@ -212,7 +218,7 @@
         </div>
 
         <div class="editor-footer">
-          <span id="selection-hint">Draw (D): click empty space to add points, click an existing point to weld onto it, click a second edge to bridge.</span>
+          <span id="selection-hint">Draw · Face: closing a triangle/quad creates a face. Hold Ctrl (or switch to Line) for knife-only cuts.</span>
           <div>
             <button class="text-button" id="undo" type="button" disabled>Undo</button>
             <button class="text-button" id="redo" type="button" disabled>Redo</button>
@@ -348,7 +354,8 @@
             <div><dt><kbd>0</kbd></dt><dd>Reset zoom to fit</dd></div>
             <div><dt><kbd>Space</kbd>+drag</dt><dd>Pan the view (or middle-drag)</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Clear selection</dd></div>
-            <div><dt><kbd>Del</kbd></dt><dd>Delete selected points</dd></div>
+            <div><dt><kbd>Del</kbd></dt><dd>Delete selected points, line, or face</dd></div>
+            <div><dt><kbd>Ctrl</kbd> (while drawing)</dt><dd>Temporarily use Line mode (no auto-faces)</dd></div>
             <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Nudge (hold <kbd>Shift</kbd> for 10 px)</dd></div>
             <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo (add <kbd>Shift</kbd> to redo)</dd></div>
           </dl>
@@ -359,7 +366,7 @@
           <ol>
             <li>Select a layer and <strong>Capture selected</strong> under Source — only that layer is captured.</li>
             <li>Optionally select another layer and <strong>Capture selected</strong> under Reference, or load an image. Use <strong>Reference tint</strong> if the images look too similar.</li>
-            <li>In <strong>Layout</strong>, use the <strong>Draw</strong> tool to extrude edges, grow triangles and quads, and bridge two edges to fill gaps. Click an existing point to weld onto it.</li>
+            <li>In <strong>Layout</strong>, use <strong>Draw</strong> in Face mode to close triangles/quads into faces (hold <kbd>Ctrl</kbd> or switch to Line for knife-only cuts). <strong>Select</strong> can pick points, lines, or faces, or drag a marquee; <kbd>Del</kbd> removes the selection while keeping points when deleting faces/lines.</li>
             <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
           </ol>
         </details>
@@ -384,10 +391,10 @@ UV Warp · building1-3 [UVWP:id]
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.3.8 · local processing · no login</span>
+        <span>v0.3.13 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.3.8"></script>
+    <script type="module" src="./installer.js?v=0.3.13"></script>
   </body>
 </html>
