@@ -10,8 +10,8 @@
     />
     <title>UV Warp for Photopea</title>
     <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=0.3.13" />
-    <link rel="stylesheet" href="./installer.css?v=0.3.13" />
+    <link rel="stylesheet" href="./styles.css?v=0.3.15" />
+    <link rel="stylesheet" href="./installer.css?v=0.3.15" />
   </head>
   <body>
     <main class="install-page" id="install-page" hidden>
@@ -20,7 +20,7 @@
           <div class="install-eyebrow">
             <span class="install-eyebrow-dot" aria-hidden="true"></span>
             Photopea plugin
-            <span class="install-version">v0.3.13</span>
+            <span class="install-version">v0.3.15</span>
           </div>
 
           <h1>Warp images with a UV-style mesh.</h1>
@@ -33,7 +33,7 @@
           <div class="release-meta" aria-label="Current release information">
             <div>
               <span>Current version</span>
-              <strong>v0.3.13</strong>
+              <strong>v0.3.15</strong>
             </div>
             <div>
               <span>Workflow</span>
@@ -120,7 +120,7 @@
             </div>
             <iframe
               title="UV Warp plugin panel preview"
-              src="./?preview=1&v=0.3.13"
+              src="./?preview=1&v=0.3.15"
               loading="eager"
             ></iframe>
           </div>
@@ -140,7 +140,7 @@
           <h1>UV Warp</h1>
           <p>Editable mesh warping for Photopea</p>
         </div>
-        <span class="version">v0.3.13</span>
+        <span class="version">v0.3.15</span>
       </header>
 
       <section class="workspace-card" id="workspace-card">
@@ -194,6 +194,15 @@
               <path d="M8.4 6h7.2M6 8.4v7.2" />
             </svg>
             Connections
+          </button>
+
+          <button class="toolbar-toggle" id="islands-toggle" type="button" aria-pressed="false" title="Islands (I) — opaque UV islands with depth numbers">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 18 9 6l5 8 3-4 3 8Z" />
+              <circle cx="9" cy="6" r="1.6" />
+              <circle cx="14" cy="14" r="1.6" />
+            </svg>
+            Islands
           </button>
 
           <button class="toolbar-toggle" id="fullscreen-toggle" type="button" aria-pressed="false" title="Fullscreen (F) — hide the controls and enlarge the editor">
@@ -280,6 +289,22 @@
           <div class="control-row preset-row" id="pen-controls">
             <button class="button button-subtle" id="reset-layout" type="button">Reset mesh</button>
             <button class="button button-subtle" id="delete-selection" type="button" title="Delete the selected points (Delete)">Delete</button>
+            <button class="button button-subtle" id="raise-island" type="button" title="Raise selected UV island depth so it paints on top (])" disabled>Raise island</button>
+          </div>
+
+          <div class="template-bar" id="template-bar">
+            <label for="mesh-templates">Mesh templates</label>
+            <select id="mesh-templates" title="Saved mesh templates in this browser">
+              <option value="">No templates yet</option>
+            </select>
+            <div class="template-actions">
+              <button class="button button-subtle" id="save-template" type="button" title="Save the current mesh as a reusable template" disabled>Save as template</button>
+              <button class="button button-subtle" id="apply-template" type="button" title="Fit the selected template into the current source bounds" disabled>Apply</button>
+              <button class="button button-subtle" id="delete-template" type="button" title="Remove the selected template from this browser" disabled>Delete</button>
+              <button class="button button-subtle" id="export-template" type="button" title="Download the selected template as JSON" disabled>Export</button>
+              <button class="button button-subtle" id="import-template" type="button" title="Import template JSON into this browser">Import</button>
+              <input id="template-file" type="file" accept="application/json,.json" hidden />
+            </div>
           </div>
 
           <div class="control-grid">
@@ -322,6 +347,9 @@
             <button class="button button-subtle" id="reset-warp" type="button">
               Reset warp
             </button>
+            <button class="button button-subtle" id="save-mesh" type="button" title="Save mesh data to the PSD without creating a warped image">
+              Save mesh
+            </button>
             <button class="button button-primary" id="create-output" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M5 4h11l3 3v13H5zM8 4v6h8V5M8 20v-6h8v6" />
@@ -354,6 +382,9 @@
             <div><dt><kbd>0</kbd></dt><dd>Reset zoom to fit</dd></div>
             <div><dt><kbd>Space</kbd>+drag</dt><dd>Pan the view (or middle-drag)</dd></div>
             <div><dt><kbd>Esc</kbd></dt><dd>Clear selection</dd></div>
+            <div><dt><kbd>I</kbd></dt><dd>Toggle opaque UV island view</dd></div>
+            <div><dt><kbd>L</kbd></dt><dd>Select / deselect UV island under cursor (selects its points for Del)</dd></div>
+            <div><dt><kbd>]</kbd> / <kbd>[</kbd></dt><dd>Raise / lower selected UV island depth</dd></div>
             <div><dt><kbd>Del</kbd></dt><dd>Delete selected points, line, or face</dd></div>
             <div><dt><kbd>Ctrl</kbd> (while drawing)</dt><dd>Temporarily use Line mode (no auto-faces)</dd></div>
             <div><dt><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd></dt><dd>Nudge (hold <kbd>Shift</kbd> for 10 px)</dd></div>
@@ -366,7 +397,7 @@
           <ol>
             <li>Select a layer and <strong>Capture selected</strong> under Source — only that layer is captured.</li>
             <li>Optionally select another layer and <strong>Capture selected</strong> under Reference, or load an image. Use <strong>Reference tint</strong> if the images look too similar.</li>
-            <li>In <strong>Layout</strong>, use <strong>Draw</strong> in Face mode to close triangles/quads into faces (hold <kbd>Ctrl</kbd> or switch to Line for knife-only cuts). <strong>Select</strong> can pick points, lines, or faces, or drag a marquee; <kbd>Del</kbd> removes the selection while keeping points when deleting faces/lines.</li>
+            <li>In <strong>Layout</strong>, use <strong>Draw</strong> in Face mode to close triangles/quads into faces (hold <kbd>Ctrl</kbd> or switch to Line for knife-only cuts). <strong>Select</strong> can pick points, lines, or faces, or drag a marquee; <kbd>Del</kbd> removes the selection while keeping points when deleting faces/lines. Save reusable shapes with <strong>Save as template</strong>; <strong>Apply</strong> fits layout + warp into the current source bounds.</li>
             <li>Switch to <strong>Warp</strong>, move matching points onto the reference, then <strong>Create output</strong>.</li>
           </ol>
         </details>
@@ -391,10 +422,10 @@ UV Warp · building1-3 [UVWP:id]
 
       <footer>
         <a href="https://github.com/chaxic/photopea-uv-warp" target="_blank" rel="noreferrer">View source ↗</a>
-        <span>v0.3.13 · local processing · no login</span>
+        <span>v0.3.15 · local processing · no login</span>
       </footer>
     </main>
 
-    <script type="module" src="./installer.js?v=0.3.13"></script>
+    <script type="module" src="./installer.js?v=0.3.15"></script>
   </body>
 </html>

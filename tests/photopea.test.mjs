@@ -11,6 +11,7 @@ import {
   scanSavedWarps,
   toggleSavedOutput,
   createOutputFinalizeScript,
+  createSaveMeshScript,
 } from "../src/photopea.js";
 
 function capturePostedScript(action) {
@@ -75,9 +76,33 @@ test("every Photopea bridge action emits syntactically valid JavaScript", () => 
       sourceDocumentName: "Building.psd",
       sourceDocumentSource: "local,Building.psd",
     }),
+    createSaveMeshScript({
+      sourceLayerId: 12,
+      sourceLayerName: "Building",
+      projectId: "uvwp-test",
+      stateBase64: "e30=",
+      groupName: "UV Warp — Test",
+      dataLayerName: "Mesh Data — do not edit [test]",
+    }),
   ];
 
   scripts.forEach((script) => assert.doesNotThrow(() => new Function(script)));
+});
+
+test("save mesh script writes data without placing a warped image", () => {
+  const script = createSaveMeshScript({
+    sourceLayerId: 12,
+    sourceLayerName: "Building",
+    projectId: "uvwp-test",
+    stateBase64: "e30=",
+    groupName: "UV Warp — Test",
+    dataLayerName: "Mesh Data — do not edit [test]",
+  });
+  assert.doesNotMatch(script, /data:image\//);
+  assert.doesNotMatch(script, /\[Warped\]/);
+  assert.doesNotMatch(script, /\[Original\]/);
+  assert.match(script, /save-mesh-result/);
+  assert.match(script, /dataPrefix/);
 });
 
 test("output finalize script transfers a placed document without embedding a data URL", () => {

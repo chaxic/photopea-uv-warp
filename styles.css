@@ -284,6 +284,38 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
+.template-bar {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding-top: 9px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.template-bar label {
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.template-bar select {
+  width: 100%;
+  min-width: 0;
+}
+
+.template-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.template-actions .button {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .workspace-card {
   overflow: hidden;
   margin-bottom: 8px;

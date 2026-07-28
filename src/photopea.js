@@ -612,6 +612,95 @@ export function createOutputLayerScript(options) {
   return createOutputFinalizeScript(options);
 }
 
+/**
+ * Upsert Mesh Data text layer in the UV Warp group without placing a warped PNG.
+ * Does not rename the source or create a [Warped] layer.
+ */
+export function createSaveMeshScript({
+  sourceLayerId,
+  sourceLayerName,
+  projectId,
+  stateBase64,
+  groupName,
+  dataLayerName,
+}) {
+  const payload = JSON.stringify({
+    sourceLayerId,
+    sourceLayerName,
+    projectId,
+    stateBase64,
+    groupName,
+    dataLayerName,
+  });
+
+  return `
+(function () {
+  ${commonScriptHelpers()}
+  var dataPrefix = ${JSON.stringify(DATA_PREFIX)};
+  var data = ${payload};
+  function duplicateInto(target, layer) {
+    var copied = null;
+    try { copied = layer.duplicate(target, ElementPlacement.PLACEATBEGINNING); } catch (_) { copied = null; }
+    if (!copied) {
+      try { copied = layer.duplicate(target, ElementPlacement.INSIDE); } catch (_) { copied = null; }
+    }
+    if (!copied) {
+      try { copied = layer.duplicate(target); } catch (_) { copied = null; }
+    }
+    return copied;
+  }
+  try {
+    if (!app.documents.length) throw new Error("Open a document before saving the mesh.");
+    var sourceDocument = app.activeDocument;
+    var sourceLayer = findLayerById(sourceDocument, data.sourceLayerId);
+    if (!sourceLayer) sourceLayer = findLayerByName(sourceDocument, data.sourceLayerName);
+    if (!sourceLayer) throw new Error("The source layer could not be found.");
+
+    var group = findLayerSetByName(sourceDocument, data.groupName);
+    if (!group) {
+      group = sourceDocument.layerSets.add();
+      group.name = data.groupName;
+    }
+
+    var dataLayer = findLayerByName(group, data.dataLayerName);
+    if (!dataLayer) {
+      dataLayer = sourceDocument.artLayers.add();
+      try { dataLayer.kind = LayerKind.TEXT; } catch (_) {}
+      dataLayer.name = data.dataLayerName;
+      var nested = duplicateInto(group, dataLayer);
+      if (nested && nested !== dataLayer) {
+        try { dataLayer.remove(); } catch (_) {}
+        dataLayer = nested;
+        try { dataLayer.name = data.dataLayerName; } catch (_) {}
+        try { dataLayer.kind = LayerKind.TEXT; } catch (_) {}
+      }
+    }
+    var dataSaved = true;
+    try {
+      dataLayer.textItem.contents = dataPrefix + data.stateBase64;
+      dataLayer.visible = false;
+    } catch (_) {
+      dataSaved = false;
+      try { dataLayer.visible = false; } catch (_hide) {}
+    }
+
+    group.visible = true;
+    try { sourceDocument.activeLayer = sourceLayer; } catch (_) {}
+    echo("save-mesh-result", {
+      ok: true,
+      dataSaved: dataSaved,
+      projectId: data.projectId,
+      groupName: data.groupName
+    });
+  } catch (error) {
+    echo("save-mesh-result", {
+      ok: false,
+      message: error && error.message ? error.message : String(error)
+    });
+  }
+}());`;
+}
+
 export function toggleSavedOutput({ groupName, sourceLayerId, sourceLayerName, originalLayerName = "" }) {
   const script = `
 (function () {

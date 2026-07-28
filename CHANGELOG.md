@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.15] - 2026-07-28
+
+### Added
+
+- **Mesh templates:** save reusable UV meshes in this browser, apply them fitted to the current source bounds (layout + warp), and export/import JSON.
+
+## [0.3.14] - 2026-07-28
+
+### Added
+
+- Select mode: drag a selected edge or face (and nudge with arrow keys).
+- **Save mesh** stores mesh data in the PSD without creating a warped image.
+- UV islands: **Islands** overlay with depth numbers, **L** to select/deselect an island (and its points for **Del**), **Raise island** / **]** / **[** to change paint order (later = on top).
+
+### Fixed
+
+- Opaque **Islands** view uses solid fills (no transparency through faces).
+
 ## [0.3.13] - 2026-07-28
 
 ### Fixed

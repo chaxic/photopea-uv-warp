@@ -1,6 +1,29 @@
 import { clonePoints, validateProjectMesh } from "./mesh.js";
 import {
+  computeIslands,
+  facesInIslandOrder,
+  islandAtPoint,
+  islandContainingSelection,
+  islandHue,
+  orderedIslands,
+  lowerIslandInOrder,
+  raiseIslandInOrder,
+  resolveIslandOrder,
+} from "./islands.js";
+import {
+  deleteTemplate as removeStoredTemplate,
+  fitMeshToBounds,
+  getTemplate,
+  importTemplates,
+  listTemplates,
+  meshToTemplate,
+  parseTemplateFile,
+  serializeTemplate,
+  upsertTemplate,
+} from "./templates.js";
+import {
   createOutputFinalizeScript,
+  createSaveMeshScript,
   isEmbeddedInPhotopea,
   makeCloseTemporaryScript,
   makePrepareCapturePngScript,
@@ -93,7 +116,17 @@ const elements = {
   backgroundColor: document.querySelector("#background-color"),
   resetLayout: document.querySelector("#reset-layout"),
   resetWarp: document.querySelector("#reset-warp"),
+  saveMesh: document.querySelector("#save-mesh"),
   createOutput: document.querySelector("#create-output"),
+  raiseIsland: document.querySelector("#raise-island"),
+  islandsToggle: document.querySelector("#islands-toggle"),
+  meshTemplates: document.querySelector("#mesh-templates"),
+  saveTemplate: document.querySelector("#save-template"),
+  applyTemplate: document.querySelector("#apply-template"),
+  deleteTemplate: document.querySelector("#delete-template"),
+  exportTemplate: document.querySelector("#export-template"),
+  importTemplate: document.querySelector("#import-template"),
+  templateFile: document.querySelector("#template-file"),
   statusCard: document.querySelector("#status-card"),
   statusTitle: document.querySelector("#status-title"),
   statusMessage: document.querySelector("#status-message"),
@@ -109,6 +142,9 @@ const state = {
   meshVisible: true,
   trianglesVisible: false,
   connectionsVisible: false,
+  islandsVisible: false,
+  selectedIslandId: null,
+  lastPointerDocument: null,
   fullscreen: false,
   referenceTint: false,
   busy: false,
@@ -172,6 +208,10 @@ function setBusy(busy) {
   disabled(elements.loadProject);
   disabled(elements.toggleOutput);
   disabled(elements.createOutput, true);
+  disabled(elements.saveMesh, true);
+  disabled(elements.raiseIsland, true);
+  disabled(elements.saveTemplate, true);
+  disabled(elements.applyTemplate, true);
   disabled(elements.resetLayout, true);
   disabled(elements.resetWarp, true);
   disabled(elements.deleteSelection, true);
@@ -181,6 +221,7 @@ function setBusy(busy) {
   disabled(elements.drawModeFace, true);
   elements.referenceFile.disabled = busy || !state.project;
   updateHistoryButtons();
+  updateTemplateControls();
 }
 
 function setProjectReady(ready) {
@@ -189,16 +230,19 @@ function setProjectReady(ready) {
   elements.canvas.classList.toggle("is-ready", ready);
   for (const element of [
     elements.modeLayout, elements.modeWarp, elements.previewToggle, elements.meshToggle,
-    elements.trianglesToggle, elements.connectionsToggle, elements.fullscreenToggle,
+    elements.trianglesToggle, elements.connectionsToggle, elements.islandsToggle, elements.fullscreenToggle,
     elements.toolPen, elements.toolSelect, elements.drawModeLine, elements.drawModeFace,
-    elements.deleteSelection, elements.sourceOpacity,
+    elements.deleteSelection, elements.raiseIsland, elements.sourceOpacity,
     elements.referenceOpacity, elements.referenceTintToggle, elements.referenceTintColor,
     elements.backgroundColor,
-    elements.resetLayout, elements.resetWarp, elements.createOutput,
+    elements.resetLayout, elements.resetWarp, elements.saveMesh, elements.createOutput,
+    elements.saveTemplate, elements.applyTemplate,
     elements.clearSource, elements.captureReference, elements.loadReference,
   ]) {
     element.disabled = !ready || state.busy;
   }
+  updateRaiseIslandButton();
+  updateTemplateControls();
   elements.referenceFile.disabled = !ready || state.busy;
   elements.clearReference.disabled = !ready || state.busy || !state.backdropImage;
   syncReferenceTintControls();
@@ -268,11 +312,13 @@ function normalizedSourceBounds() {
 function snapshotMesh() {
   if (!state.project) return null;
   const { mesh } = state.project;
+  const islands = computeIslands(mesh.quads, mesh.sourceVertices);
   return {
     name: mesh.name,
     warpLinked: Boolean(mesh.warpLinked),
     quads: mesh.quads.map((face) => [...face]),
     edges: ensureEdges(mesh.quads, mesh.edges).map((edge) => [...edge]),
+    islandOrder: resolveIslandOrder(islands, mesh.islandOrder),
     sourceVertices: clonePoints(mesh.sourceVertices),
     warpVertices: clonePoints(mesh.warpVertices),
   };
@@ -282,7 +328,9 @@ function clearSelection() {
   state.selectedPoints.clear();
   state.selectedEdge = null;
   state.selectedFace = null;
+  state.selectedIslandId = null;
   state.penPreview = null;
+  updateRaiseIslandButton();
 }
 
 function restoreMesh(snapshot) {
@@ -291,6 +339,7 @@ function restoreMesh(snapshot) {
     warpLinked: Boolean(snapshot.warpLinked),
     quads: snapshot.quads.map((face) => [...face]),
     edges: ensureEdges(snapshot.quads, snapshot.edges).map((edge) => [...edge]),
+    islandOrder: Array.isArray(snapshot.islandOrder) ? [...snapshot.islandOrder] : [],
     sourceVertices: clonePoints(snapshot.sourceVertices),
     warpVertices: clonePoints(snapshot.warpVertices),
   };
@@ -419,6 +468,89 @@ function toggleTriangles() {
   state.trianglesVisible = !state.trianglesVisible;
   setToggle(elements.trianglesToggle, state.trianglesVisible);
   scheduleRender();
+}
+
+function toggleIslands() {
+  state.islandsVisible = !state.islandsVisible;
+  setToggle(elements.islandsToggle, state.islandsVisible);
+  scheduleRender();
+}
+
+function toggleIslandSelection() {
+  if (!state.project) return;
+  const mesh = state.project.mesh;
+  const vertices = activeVertices();
+  let island = null;
+  if (state.lastPointerDocument) {
+    island = islandAtPoint(state.lastPointerDocument, mesh.quads, vertices, mesh.islandOrder);
+  }
+  if (!island) {
+    island = islandContainingSelection({
+      points: [...state.selectedPoints],
+      edge: state.selectedEdge,
+      face: state.selectedFace,
+      islandId: state.selectedIslandId,
+    }, mesh.quads, vertices, mesh.islandOrder);
+  }
+  if (!island) {
+    setStatus("warning", "No UV island", "Click a face first, or move the cursor over an island, then press L.");
+    return;
+  }
+  if (state.selectedIslandId === island.id) {
+    clearSelection();
+    setStatus("success", "Island deselected", "Press L again over an island to select it.");
+  } else {
+    clearSelection();
+    state.selectedIslandId = island.id;
+    island.vertices.forEach((index) => state.selectedPoints.add(index));
+    mesh.islandOrder = resolveIslandOrder(computeIslands(mesh.quads, mesh.sourceVertices), mesh.islandOrder);
+    const rank = orderedIslands(computeIslands(mesh.quads, vertices), mesh.islandOrder)
+      .findIndex((entry) => entry.id === island.id) + 1;
+    setStatus(
+      "success",
+      "Island selected",
+      `Island ${rank} · ${island.faces.length} face${island.faces.length === 1 ? "" : "s"} · ${island.vertices.length} point${island.vertices.length === 1 ? "" : "s"}. Del removes it; ] / [ change depth.`,
+    );
+  }
+  updateRaiseIslandButton();
+  scheduleRender();
+}
+
+function adjustSelectedIslandDepth(direction) {
+  if (!state.project || !state.selectedIslandId) return;
+  const before = snapshotMesh();
+  const mesh = state.project.mesh;
+  const islands = computeIslands(mesh.quads, mesh.sourceVertices);
+  const order = resolveIslandOrder(islands, mesh.islandOrder);
+  const next = direction > 0
+    ? raiseIslandInOrder(order, state.selectedIslandId)
+    : lowerIslandInOrder(order, state.selectedIslandId);
+  if (next.join("|") === order.join("|")) {
+    setStatus("info", direction > 0 ? "Already on top" : "Already at bottom",
+      direction > 0
+        ? "This island is already the highest depth."
+        : "This island is already the lowest depth.");
+    return;
+  }
+  mesh.islandOrder = next;
+  pushUndo(before);
+  const rank = next.indexOf(state.selectedIslandId) + 1;
+  setStatus("success", direction > 0 ? "Island raised" : "Island lowered",
+    `Island depth is now ${rank} of ${next.length} (higher paints on top).`);
+  scheduleRender();
+}
+
+function raiseSelectedIsland() {
+  adjustSelectedIslandDepth(1);
+}
+
+function lowerSelectedIsland() {
+  adjustSelectedIslandDepth(-1);
+}
+
+function updateRaiseIslandButton() {
+  if (!elements.raiseIsland) return;
+  elements.raiseIsland.disabled = state.busy || !state.project || !state.selectedIslandId;
 }
 
 function toggleConnections() {
@@ -601,6 +733,7 @@ function drawLiveWarp(context, metrics) {
   context.clip();
   drawWarpedMesh(context, state.sourceImage, sourceVertices, targets, mesh.quads, {
     seamOverlap: 0.5 * metrics.ratio,
+    faceOrder: facesInIslandOrder(mesh.quads, mesh.sourceVertices, mesh.islandOrder),
   });
   context.restore();
 }
@@ -710,15 +843,34 @@ function drawMeshOverlay(context, metrics) {
   const vertices = state.mode === "layout" ? mesh.sourceVertices : mesh.warpVertices;
   const points = vertices.map((point) => documentToCanvas(point, metrics));
   const edges = drawableEdges(mesh.quads, mesh.edges);
+  const islands = orderedIslands(computeIslands(mesh.quads, vertices), mesh.islandOrder);
   context.save();
   context.lineCap = "round";
   context.lineJoin = "round";
-  for (const face of mesh.quads) {
-    const faceSelected = state.selectedFace && facesEqual(face, state.selectedFace);
-    tracePolygon(context, explodedFacePoints(face, points));
-    context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.22)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
-    context.fill();
+
+  if (state.islandsVisible && islands.length) {
+    islands.forEach((island, index) => {
+      const hue = islandHue(index, islands.length);
+      const selected = state.selectedIslandId === island.id;
+      context.fillStyle = selected
+        ? `hsl(${hue}, 78%, 58%)`
+        : `hsl(${hue}, 70%, 48%)`;
+      for (const face of island.faces) {
+        tracePolygon(context, face.map((vertIndex) => points[vertIndex]));
+        context.fill();
+      }
+    });
+  } else {
+    for (const face of mesh.quads) {
+      const faceSelected = (state.selectedFace && facesEqual(face, state.selectedFace))
+        || (state.selectedIslandId && islands.some((island) =>
+          island.id === state.selectedIslandId && island.faces.some((entry) => facesEqual(entry, face))));
+      tracePolygon(context, explodedFacePoints(face, points));
+      context.fillStyle = faceSelected ? "rgba(255, 212, 102, 0.22)" : state.mode === "layout" ? "rgba(119, 132, 255, 0.075)" : "rgba(74, 224, 181, 0.055)";
+      context.fill();
+    }
   }
+
   // Draw all stored/face edges once (includes free knife cuts).
   context.strokeStyle = state.mode === "layout" ? "rgba(170, 178, 255, 0.92)" : "rgba(105, 232, 194, 0.94)";
   context.lineWidth = 1.25 * metrics.ratio;
@@ -749,6 +901,26 @@ function drawMeshOverlay(context, metrics) {
     context.stroke();
   }
   drawVertices(context, metrics, points);
+
+  if (state.islandsVisible && islands.length) {
+    islands.forEach((island, index) => {
+      const center = documentToCanvas(island.centroid, metrics);
+      const label = String(index + 1);
+      const radius = 9 * metrics.ratio;
+      context.beginPath();
+      context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+      context.fillStyle = state.selectedIslandId === island.id ? "#ffd166" : "rgba(12, 14, 18, 0.82)";
+      context.fill();
+      context.strokeStyle = "#ffd166";
+      context.lineWidth = metrics.ratio;
+      context.stroke();
+      context.fillStyle = state.selectedIslandId === island.id ? "#1a1404" : "#ffd166";
+      context.font = `700 ${11 * metrics.ratio}px ui-sans-serif, system-ui, sans-serif`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.fillText(label, center.x, center.y + 0.5 * metrics.ratio);
+    });
+  }
   context.restore();
 }
 
@@ -857,16 +1029,30 @@ function activeVertices() {
   return state.mode === "layout" ? state.project.mesh.sourceVertices : state.project.mesh.warpVertices;
 }
 
+function indicesForActiveSelection() {
+  if (state.selectedPoints.size) return [...state.selectedPoints];
+  if (state.selectedIslandId && state.project) {
+    const islands = computeIslands(state.project.mesh.quads, activeVertices());
+    const island = islands.find((entry) => entry.id === state.selectedIslandId);
+    if (island) return [...island.vertices];
+  }
+  if (state.selectedEdge) return [...state.selectedEdge];
+  if (state.selectedFace) return [...new Set(state.selectedFace)];
+  return [];
+}
+
 function selectEdge(edge, preserve = false) {
   if (!preserve) state.selectedPoints.clear();
   state.selectedEdge = [...edge];
   state.selectedFace = null;
+  state.selectedIslandId = null;
 }
 
 function selectFace(face, preserve = false) {
   if (!preserve) state.selectedPoints.clear();
   state.selectedEdge = null;
   state.selectedFace = [...face];
+  state.selectedIslandId = null;
 }
 
 function setPointSelection(indices, { preserve = false } = {}) {
@@ -874,19 +1060,22 @@ function setPointSelection(indices, { preserve = false } = {}) {
     state.selectedPoints.clear();
     state.selectedEdge = null;
     state.selectedFace = null;
+    state.selectedIslandId = null;
   }
   indices.forEach((index) => state.selectedPoints.add(index));
 }
 
-function beginDrag(event, pointerDocument) {
+function beginDrag(event, pointerDocument, indexList = null) {
   const vertices = activeVertices();
-  const starts = new Map([...state.selectedPoints].map((index) => [index, { ...vertices[index] }]));
+  const indices = indexList || indicesForActiveSelection();
+  if (!indices.length) return;
+  const starts = new Map(indices.map((index) => [index, { ...vertices[index] }]));
   state.drag = {
     pointerId: event.pointerId,
     startPointer: pointerDocument,
     starts,
     warpStarts: state.mode === "layout" && state.project.mesh.warpLinked
-      ? new Map([...state.selectedPoints].map((index) => [index, { ...state.project.mesh.warpVertices[index] }]))
+      ? new Map(indices.map((index) => [index, { ...state.project.mesh.warpVertices[index] }]))
       : null,
     before: snapshotMesh(),
     changed: false,
@@ -968,8 +1157,20 @@ function handlePointerDown(event) {
   }
   const vertex = nearestVertex(pointerDocument, vertices, vertexThreshold);
   if (vertex >= 0) {
+    if (state.selectedIslandId) {
+      const islands = computeIslands(state.project.mesh.quads, vertices);
+      const island = islands.find((entry) => entry.id === state.selectedIslandId);
+      if (island?.vertices.includes(vertex)) {
+        beginDrag(event, pointerDocument, [...island.vertices]);
+        scheduleRender();
+        event.preventDefault();
+        return;
+      }
+    }
     state.selectedEdge = null;
     state.selectedFace = null;
+    state.selectedIslandId = null;
+    updateRaiseIslandButton();
     if (event.shiftKey) {
       if (state.selectedPoints.has(vertex)) state.selectedPoints.delete(vertex);
       else state.selectedPoints.add(vertex);
@@ -983,13 +1184,35 @@ function handlePointerDown(event) {
       ? nearestEdge(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads, threshold, state.project.mesh.edges)
       : null;
     if (edgeResult) {
+      if (state.selectedIslandId) {
+        const islands = computeIslands(state.project.mesh.quads, vertices);
+        const island = islands.find((entry) => entry.id === state.selectedIslandId);
+        if (island && edgeResult.edge.every((index) => island.vertices.includes(index))) {
+          beginDrag(event, pointerDocument, [...island.vertices]);
+          scheduleRender();
+          event.preventDefault();
+          return;
+        }
+      }
       selectEdge(edgeResult.edge, event.shiftKey);
+      beginDrag(event, pointerDocument, [...edgeResult.edge]);
     } else {
       const faceHit = state.mode === "layout"
         ? findFaceAtPoint(pointerDocument, state.project.mesh.sourceVertices, state.project.mesh.quads)
         : null;
       if (faceHit) {
+        if (state.selectedIslandId) {
+          const islands = computeIslands(state.project.mesh.quads, vertices);
+          const island = islands.find((entry) => entry.id === state.selectedIslandId);
+          if (island?.faces.some((face) => facesEqual(face, faceHit))) {
+            beginDrag(event, pointerDocument, [...island.vertices]);
+            scheduleRender();
+            event.preventDefault();
+            return;
+          }
+        }
         selectFace(faceHit, event.shiftKey);
+        beginDrag(event, pointerDocument, [...new Set(faceHit)]);
       } else {
         state.marquee = {
           pointerId: event.pointerId,
@@ -1019,6 +1242,7 @@ function handlePointerMove(event) {
     return;
   }
   const pointerDocument = canvasToDocument(pointerPosition(event, metrics), metrics);
+  state.lastPointerDocument = { ...pointerDocument };
   if (state.marquee && state.marquee.pointerId === event.pointerId) {
     state.marquee.current = { ...pointerDocument };
     scheduleRender();
@@ -1175,6 +1399,7 @@ function deleteSelection() {
     return;
   }
   const before = snapshotMesh();
+  const deletingIsland = Boolean(state.selectedIslandId);
   let source = state.project.mesh.sourceVertices;
   let warp = state.project.mesh.warpVertices;
   let faces = state.project.mesh.quads;
@@ -1188,7 +1413,10 @@ function deleteSelection() {
     state.project.mesh = { ...state.project.mesh, sourceVertices: source, warpVertices: warp, quads: faces, edges };
     clearSelection();
     pushUndo(before);
-    setStatus("success", "Selection deleted", "Faces using the deleted points were removed.");
+    setStatus("success", "Selection deleted",
+      deletingIsland
+        ? "The selected UV island was removed."
+        : "Faces using the deleted points were removed.");
   } catch (error) {
     setStatus("error", "Could not delete selection", error.message);
   }
@@ -1196,14 +1424,16 @@ function deleteSelection() {
 }
 
 function nudgeSelection(event) {
-  if (!state.project || !state.selectedPoints.size) return false;
+  if (!state.project) return false;
+  const indices = indicesForActiveSelection();
+  if (!indices.length) return false;
   const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (!directions[event.key]) return false;
   const [dx, dy] = directions[event.key];
   const pixels = event.shiftKey ? 10 : 1;
   const before = snapshotMesh();
   const vertices = activeVertices();
-  state.selectedPoints.forEach((index) => {
+  indices.forEach((index) => {
     const point = clampPoint({
       x: vertices[index].x + dx * pixels / state.captureMeta.documentWidth,
       y: vertices[index].y + dy * pixels / state.captureMeta.documentHeight,
@@ -1226,6 +1456,10 @@ const TOOL_HOTKEYS = {
   p: togglePreview,
   m: toggleMesh,
   t: toggleTriangles,
+  i: toggleIslands,
+  l: toggleIslandSelection,
+  "]": () => raiseSelectedIsland(),
+  "[": () => lowerSelectedIsland(),
   f: toggleFullscreen,
   "+": zoomIn,
   "=": zoomIn,
@@ -1277,6 +1511,149 @@ function handleKeyDown(event) {
   if (hotkey && state.project && !state.busy) {
     event.preventDefault();
     hotkey();
+  }
+}
+
+function selectedTemplateId() {
+  return elements.meshTemplates?.value || "";
+}
+
+function refreshTemplateList(preferredId = null) {
+  if (!elements.meshTemplates) return;
+  const templates = listTemplates();
+  const selected = preferredId || selectedTemplateId();
+  elements.meshTemplates.innerHTML = "";
+  if (!templates.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No templates yet";
+    elements.meshTemplates.append(option);
+  } else {
+    for (const template of templates) {
+      const option = document.createElement("option");
+      option.value = template.id;
+      option.textContent = template.name;
+      elements.meshTemplates.append(option);
+    }
+    if (selected && templates.some((entry) => entry.id === selected)) {
+      elements.meshTemplates.value = selected;
+    }
+  }
+  updateTemplateControls();
+}
+
+function updateTemplateControls() {
+  const hasProject = Boolean(state.project) && !state.busy;
+  const hasSelection = Boolean(selectedTemplateId());
+  if (elements.saveTemplate) elements.saveTemplate.disabled = !hasProject;
+  if (elements.applyTemplate) elements.applyTemplate.disabled = !hasProject || !hasSelection;
+  if (elements.deleteTemplate) elements.deleteTemplate.disabled = state.busy || !hasSelection;
+  if (elements.exportTemplate) elements.exportTemplate.disabled = state.busy || !hasSelection;
+  if (elements.importTemplate) elements.importTemplate.disabled = state.busy;
+  if (elements.meshTemplates) elements.meshTemplates.disabled = state.busy;
+}
+
+function defaultTemplateName() {
+  const layer = state.captureMeta?.layerName || state.project?.source?.layerName || "";
+  const meshName = state.project?.mesh?.name || "";
+  const base = String(layer || meshName || "Mesh").replace(/\s*\[Original\]\s*$/i, "").trim();
+  return base || "Untitled template";
+}
+
+function saveCurrentAsTemplate() {
+  if (!state.project || state.busy) return;
+  try {
+    const faces = state.project.mesh.quads;
+    if (!faces.length || !faces.some((face) => face.length >= 3)) {
+      throw new Error("Create at least one triangle or quad face before saving a template.");
+    }
+    const suggested = defaultTemplateName();
+    const name = window.prompt("Template name", suggested);
+    if (name === null) return;
+    const template = meshToTemplate(snapshotMesh(), name);
+    upsertTemplate(template);
+    refreshTemplateList(template.id);
+    setStatus("success", "Template saved", `“${template.name}” is stored in this browser. Export JSON to share it.`);
+  } catch (error) {
+    setStatus("error", "Could not save template", error.message);
+  }
+}
+
+function applySelectedTemplate() {
+  if (!state.project || state.busy) return;
+  const id = selectedTemplateId();
+  if (!id) {
+    setStatus("warning", "No template selected", "Choose a mesh template, then press Apply.");
+    return;
+  }
+  try {
+    const template = getTemplate(id);
+    if (!template) throw new Error("That template is no longer in the library.");
+    const before = snapshotMesh();
+    const fitted = fitMeshToBounds(template.mesh, normalizedSourceBounds());
+    const islands = computeIslands(fitted.quads, fitted.sourceVertices);
+    restoreMesh({
+      ...fitted,
+      islandOrder: resolveIslandOrder(islands, fitted.islandOrder),
+    });
+    pushUndo(before);
+    setStatus("success", "Template applied",
+      `“${template.name}” fitted to the current source bounds (layout + warp).`);
+  } catch (error) {
+    setStatus("error", "Could not apply template", error.message);
+  }
+}
+
+function deleteSelectedTemplate() {
+  if (state.busy) return;
+  const id = selectedTemplateId();
+  if (!id) return;
+  const template = getTemplate(id);
+  if (!template) {
+    refreshTemplateList();
+    return;
+  }
+  if (!window.confirm(`Delete template “${template.name}”?`)) return;
+  removeStoredTemplate(id);
+  refreshTemplateList();
+  setStatus("success", "Template deleted", `“${template.name}” was removed from this browser.`);
+}
+
+function exportSelectedTemplate() {
+  if (state.busy) return;
+  const id = selectedTemplateId();
+  if (!id) return;
+  try {
+    const template = getTemplate(id);
+    if (!template) throw new Error("That template is no longer in the library.");
+    const blob = new Blob([serializeTemplate(template)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const safeName = template.name.replace(/[^\w\-]+/g, "_").replace(/^_+|_+$/g, "") || "mesh-template";
+    link.href = url;
+    link.download = `${safeName}.uvwp-template.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setStatus("success", "Template exported", `Downloaded “${template.name}”.`);
+  } catch (error) {
+    setStatus("error", "Could not export template", error.message);
+  }
+}
+
+async function importTemplateFile(file) {
+  if (!file || state.busy) return;
+  try {
+    const text = await file.text();
+    const parsed = parseTemplateFile(text);
+    if (!parsed.length) throw new Error("The file did not contain any templates.");
+    const imported = importTemplates(parsed);
+    refreshTemplateList(imported[0]?.id || null);
+    setStatus("success", "Template imported",
+      imported.length === 1
+        ? `“${imported[0].name}” was added to this browser.`
+        : `${imported.length} templates were added to this browser.`);
+  } catch (error) {
+    setStatus("error", "Could not import template", error.message);
   }
 }
 
@@ -1422,6 +1799,7 @@ function normalizeLoadedProject(project) {
       warpLinked: Boolean(project.mesh.warpLinked),
       quads: project.mesh.quads.map((face) => [...face]),
       edges: ensureEdges(project.mesh.quads, project.mesh.edges).map((edge) => [...edge]),
+      islandOrder: Array.isArray(project.mesh.islandOrder) ? [...project.mesh.islandOrder] : [],
       sourceVertices: clonePoints(project.mesh.sourceVertices),
       warpVertices: clonePoints(project.mesh.warpVertices),
     },
@@ -1806,21 +2184,28 @@ function clearOutputTimeout() {
 }
 
 function failOutput(message) {
+  const saving = state.outputSession?.stage === "saving-mesh";
   clearOutputTimeout();
   state.outputSession = null;
   setBusy(false);
-  setStatus("error", "Could not create output", message);
+  setStatus("error", saving ? "Could not save mesh" : "Could not create output", message);
 }
 
 /** Photopea can swallow a script silently, so never leave the panel spinning. */
 function armOutputTimeout(stageMessage) {
   clearOutputTimeout();
   state.outputTimeoutId = setTimeout(() => {
+    const saving = state.outputSession?.stage === "saving-mesh";
     state.outputTimeoutId = null;
     state.outputSession = null;
     setBusy(false);
-    setStatus("error", "Photopea did not confirm the output",
-      stageMessage || "The original workfile should be unchanged. Close any extra PNG tab Photopea opened, then try Create output again.");
+    setStatus(
+      "error",
+      saving ? "Photopea did not confirm the mesh save" : "Photopea did not confirm the output",
+      stageMessage || (saving
+        ? "Try Save mesh again."
+        : "The original workfile should be unchanged. Close any extra PNG tab Photopea opened, then try Create output again."),
+    );
   }, OUTPUT_TIMEOUT_MS);
 }
 
@@ -1858,7 +2243,10 @@ async function createOutput() {
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
-    drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, { seamOverlap: 0.7 });
+    drawWarpedMesh(canvas.getContext("2d", { alpha: true }), state.sourceImage, source, target, state.project.mesh.quads, {
+      seamOverlap: 0.7,
+      faceOrder: facesInIslandOrder(state.project.mesh.quads, state.project.mesh.sourceVertices, state.project.mesh.islandOrder),
+    });
     const previousResultName = state.project.output?.resultName || "";
     // Keep the live Photopea layer name for lookup; serializeProject renames it locally to [Original].
     const liveSourceName = stripWarpTags(
@@ -1892,6 +2280,70 @@ async function createOutput() {
     armOutputTimeout("Photopea did not open the rendered PNG. Try Create output again.");
     setStatus("info", "Sending output to Photopea…", "Opening the warped image, then adding it to the workfile.");
     postPhotopeaBinary(buffer);
+  } catch (error) {
+    failOutput(error.message);
+  }
+}
+
+async function saveMesh() {
+  if (!state.project || state.busy) return;
+  try {
+    if (!isEmbeddedInPhotopea()) {
+      throw new Error("Save mesh requires the Photopea plugin panel.");
+    }
+    const faces = state.project.mesh.quads;
+    if (!faces.length || !faces.some((face) => face.length >= 3)) {
+      throw new Error("Create at least one triangle or quad face with Draw before saving.");
+    }
+    validateProjectMesh(state.project.mesh);
+    setBusy(true);
+    setStatus("info", "Saving mesh…", "Writing mesh data into the PSD without rendering a warped image.");
+    const liveSourceName = stripWarpTags(
+      state.captureMeta?.layerName || state.project.source.layerName || "",
+    );
+    // Preserve the live source name for lookup; do not rename to [Original] on save-only.
+    const names = makeOutputNames(
+      state.captureMeta?.layerName || state.project.source.layerName,
+      state.project.projectId,
+      state.project.output,
+    );
+    const project = {
+      ...serializeProject(),
+      source: {
+        ...state.project.source,
+        ...state.captureMeta,
+        layerName: liveSourceName,
+      },
+      output: {
+        ...state.project.output,
+        ...names,
+      },
+    };
+    // Keep originalName for Edit later, but do not rename the live layer during save.
+    const stateBase64 = encodeBase64Utf8(JSON.stringify({
+      ...project,
+      source: {
+        ...project.source,
+        layerName: names.originalName,
+      },
+    }));
+    if (stateBase64.length > MAX_STATE_BYTES) {
+      throw new Error(`The mesh data is too large to store in the PSD (${Math.round(stateBase64.length / 1024)} KB). Reduce the number of faces and try again.`);
+    }
+    state.project = {
+      ...project,
+      source: { ...project.source, layerName: liveSourceName },
+    };
+    state.outputSession = { stage: "saving-mesh" };
+    armOutputTimeout("Photopea did not confirm the mesh save. Try Save mesh again.");
+    postPhotopeaScript(createSaveMeshScript({
+      sourceLayerId: project.source.layerId,
+      sourceLayerName: liveSourceName,
+      projectId: project.projectId,
+      stateBase64,
+      groupName: names.groupName,
+      dataLayerName: names.dataLayerName,
+    }));
   } catch (error) {
     failOutput(error.message);
   }
@@ -2026,6 +2478,22 @@ async function handlePhotopeaResponse(event) {
     } else setStatus("error", "Photopea could not add the output", message.message);
     return;
   }
+  if (message.type === "save-mesh-result") {
+    clearOutputTimeout();
+    state.outputSession = null;
+    setBusy(false);
+    if (message.ok) {
+      if (message.dataSaved === false) {
+        setStatus("warning", "Mesh group created without data",
+          "Photopea could not write the mesh text layer. Try Save mesh again.");
+      } else {
+        setStatus("success", "Mesh saved",
+          `Mesh data stored in “${message.groupName || state.project.output.groupName}”. No warped image was created.`);
+      }
+      scanSavedWarps();
+    } else setStatus("error", "Could not save mesh", message.message);
+    return;
+  }
   if (message.type === "toggle-result") {
     setBusy(false);
     if (message.ok) setStatus("success", message.visible ? "UV Warp enabled" : "UV Warp disabled", message.visible ? "Showing the warped output." : "Showing the untouched source.");
@@ -2074,6 +2542,8 @@ elements.previewToggle.addEventListener("click", togglePreview);
 elements.meshToggle.addEventListener("click", toggleMesh);
 elements.trianglesToggle.addEventListener("click", toggleTriangles);
 elements.connectionsToggle.addEventListener("click", toggleConnections);
+elements.islandsToggle?.addEventListener("click", toggleIslands);
+elements.raiseIsland?.addEventListener("click", raiseSelectedIsland);
 elements.fullscreenToggle.addEventListener("click", toggleFullscreen);
 for (const [input, output] of [[elements.sourceOpacity, elements.sourceOpacityValue], [elements.referenceOpacity, elements.referenceOpacityValue]]) {
   input.addEventListener("input", () => { output.textContent = `${input.value}%`; scheduleRender(); });
@@ -2088,7 +2558,19 @@ elements.backgroundColor.addEventListener("input", () => scheduleRender());
 elements.resetLayout.addEventListener("click", resetLayout);
 elements.resetWarp.addEventListener("click", resetWarp);
 elements.deleteSelection.addEventListener("click", deleteSelection);
+elements.saveMesh?.addEventListener("click", saveMesh);
 elements.createOutput.addEventListener("click", createOutput);
+elements.saveTemplate?.addEventListener("click", saveCurrentAsTemplate);
+elements.applyTemplate?.addEventListener("click", applySelectedTemplate);
+elements.deleteTemplate?.addEventListener("click", deleteSelectedTemplate);
+elements.exportTemplate?.addEventListener("click", exportSelectedTemplate);
+elements.importTemplate?.addEventListener("click", () => elements.templateFile?.click());
+elements.meshTemplates?.addEventListener("change", updateTemplateControls);
+elements.templateFile?.addEventListener("change", async () => {
+  const [file] = elements.templateFile.files || [];
+  elements.templateFile.value = "";
+  await importTemplateFile(file);
+});
 elements.undo.addEventListener("click", undo);
 elements.redo.addEventListener("click", redo);
 elements.canvas.addEventListener("pointerdown", handlePointerDown);
@@ -2137,11 +2619,14 @@ setToggle(elements.previewToggle, state.preview);
 setToggle(elements.meshToggle, state.meshVisible);
 setToggle(elements.trianglesToggle, state.trianglesVisible);
 setToggle(elements.connectionsToggle, state.connectionsVisible);
+setToggle(elements.islandsToggle, state.islandsVisible);
 setToggle(elements.fullscreenToggle, state.fullscreen);
 setToggle(elements.toolPen, true);
 setFaceMode(true);
 syncReferenceTintControls();
 setProjectReady(false);
+updateRaiseIslandButton();
+refreshTemplateList();
 updateHistoryButtons();
 scheduleRender();
 refreshPhotopeaState();

@@ -13,6 +13,8 @@ const requiredFiles = [
   "src/warp.js",
   "src/photopea.js",
   "src/polypen.js",
+  "src/islands.js",
+  "src/templates.js",
   "assets/icon.svg",
   "plugin.json",
   "uv-warp-photopea.json",
@@ -55,6 +57,15 @@ for (const id of [
   "mode-warp",
   "preview-toggle",
   "create-output",
+  "save-mesh",
+  "islands-toggle",
+  "raise-island",
+  "mesh-templates",
+  "save-template",
+  "apply-template",
+  "delete-template",
+  "export-template",
+  "import-template",
   "status-card",
 ]) {
   if (!index.includes(`id="${id}"`)) throw new Error(`index.html is missing #${id}`);
@@ -70,7 +81,7 @@ for (const marker of [
   'id="install-page"',
   'id="plugin-app"',
   'href="./uv-warp-photopea.json"',
-  'src="./?preview=1&v=0.3.13"',
+  'src="./?preview=1&v=0.3.15"',
 ]) {
   if (!index.includes(marker)) {
     throw new Error(`index.html is missing installer marker: ${marker}`);
@@ -84,6 +95,7 @@ if (plugin.url !== installerPlugin.url || plugin.icon !== installerPlugin.icon) 
 const app = await readFile(resolve(root, "src/app.js"), "utf8");
 const photopea = await readFile(resolve(root, "src/photopea.js"), "utf8");
 const polypen = await readFile(resolve(root, "src/polypen.js"), "utf8");
+const templates = await readFile(resolve(root, "src/templates.js"), "utf8");
 for (const requirement of [
   "drawWarpedMesh",
   "createOutputLayerScript",
@@ -111,8 +123,11 @@ for (const requirement of [
   "postPhotopeaBinary",
   "connectAcrossIntersections",
   "split-and-connect",
+  "saveCurrentAsTemplate",
+  "applySelectedTemplate",
+  "fitMeshToBounds",
 ]) {
-  if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement)) {
+  if (!app.includes(requirement) && !photopea.includes(requirement) && !polypen.includes(requirement) && !templates.includes(requirement)) {
     throw new Error(`The addon is missing required workflow marker: ${requirement}`);
   }
 }

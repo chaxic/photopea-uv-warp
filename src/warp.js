@@ -82,9 +82,10 @@ export function drawWarpedMesh(
   sourceVertices,
   targetVertices,
   quads,
-  { seamOverlap = 0.45 } = {},
+  { seamOverlap = 0.45, faceOrder = null } = {},
 ) {
-  const triangles = triangulateQuads(quads);
+  const faces = Array.isArray(faceOrder) && faceOrder.length ? faceOrder : quads;
+  const triangles = triangulateQuads(faces);
   context.save();
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
